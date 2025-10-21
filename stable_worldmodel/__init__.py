@@ -55,6 +55,11 @@ register(
     entry_point="stable_worldmodel.envs.ogbench_cube:CubeEnv",
 )
 
+register(
+    id="swm/RocketLanding-v0",
+    entry_point="stable_worldmodel.envs.rocket_landing:RocketLandingEnv",
+)
+
 __all__ = [
     "World",
     "PlanConfig",
