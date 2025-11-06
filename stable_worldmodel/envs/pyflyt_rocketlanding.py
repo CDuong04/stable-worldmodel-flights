@@ -69,12 +69,22 @@ class RocketLandingEnv(RocketBaseEnv):
         )
 
         """GYMNASIUM STUFF"""
-        # the space is the standard space + pad touch indicator
+        # Observation space: 17 values total
+        # obs[0:3]   - position (x, y, z) [meters]
+        # obs[3:6]   - velocity (vx, vy, vz) [m/s]
+        # obs[6:10]  - quaternion (w, x, y, z) [unitless]
+        # obs[10:13] - angular_velocity (wx, wy, wz) [rad/s]
+        # obs[13]    - fuel_fraction [0-1]
+        # obs[14:17] - target_relative (dx, dy, dz) [meters]
         self.observation_space = Box(
-            low=np.array([*self.combined_space.low, 0.0]),
-            high=np.array([*self.combined_space.high, 1.0]),
+            low=-np.inf,
+            high=np.inf,
+            shape=(17,),
             dtype=np.float64,
         )
+        # Override bounds for specific indices
+        self.observation_space.low[13] = 0.0  # fuel_fraction min
+        self.observation_space.high[13] = 1.0  # fuel_fraction max
 
         # the landing pad
         # file_dir = os.path.dirname(os.path.realpath(__file__))
@@ -309,10 +319,11 @@ class RocketLandingEnv(RocketBaseEnv):
         else:
             pad_urdf_path = self.targ_obj_dir
 
-        # Load the landing pad
+        # Load the landing pad (target is at origin)
+        self.landing_pad_position = np.array([0.0, 0.0, 0.0])  # Target position for landing
         self.landing_pad_id = self.env.loadURDF(
             pad_urdf_path,
-            basePosition=np.array([0.0, 0.0, 0.1]),
+            basePosition=np.array([0.0, 0.0, 0.1]),  # Pad visual is slightly above ground
             useFixedBase=True,
         )
 
@@ -399,13 +410,13 @@ class RocketLandingEnv(RocketBaseEnv):
     def compute_state(self) -> None:
         """Computes the state of the current timestep.
 
-        This returns the observation.
-        - ang_vel (vector of 3 values)
-        - ang_pos (vector of 3/4 values)
-        - lin_vel (vector of 3 values)
-        - lin_pos (vector of 3 values)
-        - previous_action (vector of 4 values)
-        - auxiliary information (vector of 4 values)
+        Constructs observation in the required format:
+        obs[0:3]   - position (x, y, z) [meters]
+        obs[3:6]   - velocity (vx, vy, vz) [m/s]
+        obs[6:10]  - quaternion (w, x, y, z) [unitless]
+        obs[10:13] - angular_velocity (wx, wy, wz) [rad/s]
+        obs[13]    - fuel_fraction [0-1]
+        obs[14:17] - target_relative (dx, dy, dz) [meters]
         """
         # update the previous values to current values
         self.previous_ang_vel = self.ang_vel.copy()
@@ -423,39 +434,36 @@ class RocketLandingEnv(RocketBaseEnv):
         ) = super().compute_attitude()
         aux_state = super().compute_auxiliary()
 
-        # compute rotation matrices for converting things
+        # compute rotation matrices for converting things (needed for reward)
         rotation = np.array(p.getMatrixFromQuaternion(quaternion)).reshape(3, 3)
 
         # compute ground velocity for reward computation later
         self.ground_lin_vel = np.matmul(self.lin_vel, rotation.T)
 
-        # combine everything
-        if self.angle_representation == 0:
-            self.state = np.concatenate(
-                [
-                    self.ang_vel,
-                    self.ang_pos,
-                    self.lin_vel,
-                    self.lin_pos,
-                    self.action,
-                    aux_state,
-                    np.array([self.landing_pad_contact]),
-                ],
-                axis=-1,
-            )
-        elif self.angle_representation == 1:
-            self.state = np.concatenate(
-                [
-                    self.ang_vel,
-                    quaternion,
-                    self.lin_vel,
-                    self.lin_pos,
-                    self.action,
-                    aux_state,
-                    np.array([self.landing_pad_contact]),
-                ],
-                axis=-1,
-            )
+        # Extract fuel fraction from auxiliary state
+        # aux_state structure: [lifting(4), booster(3), gimbal(2)]
+        # booster states: [ignition, fuel_ratio, throttle]
+        # fuel_fraction is at index 5 (4 lifting + 1 for ignition = 5)
+        fuel_fraction = aux_state[5]
+
+        # Calculate target relative position (target - current_position)
+        target_relative = self.landing_pad_position - self.lin_pos
+
+        # Construct observation in required format
+        # Quaternion in PyBullet is (x, y, z, w), we need (w, x, y, z)
+        quaternion_wxyz = np.array([quaternion[3], quaternion[0], quaternion[1], quaternion[2]])
+
+        self.state = np.concatenate(
+            [
+                self.lin_pos,  # position (x, y, z) [0:3]
+                self.lin_vel,  # velocity (vx, vy, vz) [3:6]
+                quaternion_wxyz,  # quaternion (w, x, y, z) [6:10]
+                self.ang_vel,  # angular_velocity (wx, wy, wz) [10:13]
+                np.array([fuel_fraction]),  # fuel_fraction [13]
+                target_relative,  # target_relative (dx, dy, dz) [14:17]
+            ],
+            axis=-1,
+        )
 
     def compute_term_trunc_reward(self) -> None:
         """Computes the termination, truncation, and reward of the current timestep."""
