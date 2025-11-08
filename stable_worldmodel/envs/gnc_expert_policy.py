@@ -5,53 +5,72 @@ Integrates the RocketLandingGNC controller with the stable-worldmodel-flights fr
 
 import numpy as np
 from scipy.spatial.transform import Rotation
-from policy import ExpertPolicy
-from rocket_landing_gnc import RocketLandingGNC, ControllerParams
+from stable_worldmodel.policy import ExpertPolicy
+from stable_worldmodel.envs.rocket_landing_gnc import RocketLandingGNC, ControllerParams
 
 
 def parse_observation(observation: np.ndarray, angle_rep: str = "quaternion"):
-    obs = np.asarray(observation, dtype=float)
-    pos = obs[0:3] if obs.size >= 3 else np.zeros(3)
-    vel = obs[3:6] if obs.size >= 6 else np.zeros(3)
-    idx = 6
-    if angle_rep == "quaternion":
-        quat = obs[idx:idx+4] if obs.size >= idx+4 else np.array([1, 0, 0, 0], dtype=float)
-        idx += 4
-    else:
-        eul = obs[idx:idx+3] if obs.size >= idx+3 else np.zeros(3)
-        q = Rotation.from_euler("xyz", eul).as_quat()
-        quat = np.array([q[3], q[0], q[1], q[2]], dtype=float)
-        idx += 3
-    ang_vel = obs[idx:idx+3] if obs.size >= idx+3 else np.zeros(3)
-    idx += 3
-    fuel_obs = None
-    if obs.size > idx:
-        potential_fuel = float(obs[idx])
-        if 0.0 <= potential_fuel <= 1.0:
-            fuel_obs = potential_fuel
-        idx += 1
-    target_rel = obs[idx:idx+3] if obs.size >= idx+3 else np.zeros(3)
-    return dict(position=pos, velocity=vel, quaternion=quat,
-                angular_velocity=ang_vel, fuel_obs=fuel_obs, target_rel=target_rel)
+    """Parse observation array into structured dictionary.
+    obs[0:3]   - position (x, y, z) [meters]
+    obs[3:6]   - velocity (vx, vy, vz) [m/s]
+    obs[6:10]  - quaternion (w, x, y, z) [unitless]
+    obs[10:13] - angular_velocity (wx, wy, wz) [rad/s]
+    obs[13]    - fuel_fraction [0-1]
+    obs[14:17] - target_relative (dx, dy, dz) [meters]
+    """
+    obs = np.asarray(observation, dtype=float).flatten()
+
+    
+    pos = obs[0:3]
+    vel = obs[3:6]
+    quat = obs[6:10]
+    ang_vel = obs[10:13]
+    fuel_obs = float(obs[13])
+    target_rel = obs[14:17]
+    
+    return dict(
+        position=pos,
+        velocity=vel,
+        quaternion=quat,
+        angular_velocity=ang_vel,
+        fuel_obs=fuel_obs,
+        target_rel=target_rel
+    )
 
 
 class GNCExpertPolicy(ExpertPolicy):
     def __init__(self, controller_params=None, **kwargs):
         super().__init__(**kwargs)
         
-        # Create the GNC controller with provided or default parameters
         if controller_params is None:
             controller_params = ControllerParams()
         
         self.gnc = RocketLandingGNC(params=controller_params, angle_representation="quaternion")
     
     def get_action(self, info_dict, **kwargs):
-
-        state_dict = parse_observation(info_dict['state'], "quaternion")
+        """
+        Returns:
+            action: numpy array of shape (7,) containing:
+                [finlet_x, finlet_y, finlet_roll, ignition, throttle, gimbal_x, gimbal_y]
+        """
+        if isinstance(info_dict, dict):
+            if 'state' in info_dict:
+                observation = info_dict['state']
+            elif 'observation' in info_dict:
+                observation = info_dict['observation']
+            else:
+                observation = info_dict
+        else:
+            observation = info_dict
+        
+        state_dict = parse_observation(observation, "quaternion")
         
         action = self.gnc.compute_control(state_dict)
         
         self.gnc.post_step_update()
+        
+        action = np.asarray(action, dtype=np.float32).flatten()
+        
         
         return action
     
@@ -67,6 +86,10 @@ class GNCExpertPolicy(ExpertPolicy):
     def set_env(self, env):
         super().set_env(env)
         
-        obs_shape = env.observation_space.shape
+        if hasattr(env, 'observation_space'):
+            obs_shape = env.observation_space.shape
+            print(f"Environment observation space: {obs_shape}")
         
-        action_shape = env.action_space.shape
+        if hasattr(env, 'action_space'):
+            action_shape = env.action_space.shape
+            print(f"Environment action space: {action_shape}")
