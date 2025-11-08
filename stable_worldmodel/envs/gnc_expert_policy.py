@@ -47,33 +47,26 @@ class GNCExpertPolicy(ExpertPolicy):
         
         self.gnc = RocketLandingGNC(params=controller_params, angle_representation="quaternion")
     
-    def get_action(self, info_dict, **kwargs):
-        """
-        Returns:
-            action: numpy array of shape (7,) containing:
-                [finlet_x, finlet_y, finlet_roll, ignition, throttle, gimbal_x, gimbal_y]
-        """
-        if isinstance(info_dict, dict):
-            if 'state' in info_dict:
-                observation = info_dict['state']
-            elif 'observation' in info_dict:
-                observation = info_dict['observation']
+    def get_action(self, obs, goal_obs=None, **kwargs):
+        if isinstance(obs, dict):
+            if 'state' in obs:
+                observation = obs['state']
+            elif 'observation' in obs:
+                observation = obs['observation']
             else:
-                observation = info_dict
+                observation = obs
         else:
-            observation = info_dict
+            observation = obs
         
+        observation = np.asarray(observation, dtype=float).flatten()
         state_dict = parse_observation(observation, "quaternion")
-        
         action = self.gnc.compute_control(state_dict)
-        
         self.gnc.post_step_update()
-        
         action = np.asarray(action, dtype=np.float32).flatten()
         
-        
         return action
-    
+
+        
     def reset(self):
         self.gnc.reset()
     
