@@ -4,7 +4,6 @@ Integrates the RocketLandingGNC controller with the stable-worldmodel-flights fr
 """
 
 import numpy as np
-from scipy.spatial.transform import Rotation
 from stable_worldmodel.policy import ExpertPolicy
 from stable_worldmodel.envs.rocket_landing_gnc import RocketLandingGNC, ControllerParams
 
@@ -41,48 +40,74 @@ def parse_observation(observation: np.ndarray, angle_rep: str = "quaternion"):
 class GNCExpertPolicy(ExpertPolicy):
     def __init__(self, controller_params=None, **kwargs):
         super().__init__(**kwargs)
-        
-        if controller_params is None:
-            controller_params = ControllerParams()
-        
-        self.gnc = RocketLandingGNC(params=controller_params, angle_representation="quaternion")
-    
-    def get_action(self, obs, goal_obs=None, **kwargs):
+
+        self.controller_params = controller_params or ControllerParams()
+        self.controllers: list[RocketLandingGNC] = [self._make_controller()]
+
+    def _make_controller(self) -> RocketLandingGNC:
+        return RocketLandingGNC(params=self.controller_params, angle_representation="quaternion")
+
+    def _ensure_controller_count(self, count: int) -> None:
+        if count <= 0:
+            raise ValueError("Controller count must be positive.")
+
+        if len(self.controllers) < count:
+            for _ in range(count - len(self.controllers)):
+                self.controllers.append(self._make_controller())
+        elif len(self.controllers) > count:
+            self.controllers = self.controllers[:count]
+
+    def _extract_observation_array(self, obs) -> np.ndarray:
         if isinstance(obs, dict):
-            if 'state' in obs:
-                observation = obs['state']
-            elif 'observation' in obs:
-                observation = obs['observation']
+            if "state" in obs:
+                observation = obs["state"]
+            elif "observation" in obs:
+                observation = obs["observation"]
             else:
                 observation = obs
         else:
             observation = obs
-        
-        observation = np.asarray(observation, dtype=float).flatten()
-        state_dict = parse_observation(observation, "quaternion")
-        action = self.gnc.compute_control(state_dict)
-        self.gnc.post_step_update()
-        action = np.asarray(action, dtype=np.float32).flatten()
-        
-        return action
+        return np.asarray(observation, dtype=float)
 
-        
+    def get_action(self, obs, goal_obs=None, **kwargs):
+        observation = self._extract_observation_array(obs)
+        batched = observation.ndim > 1
+        obs_batch = observation if batched else observation[None, :]
+
+        self._ensure_controller_count(obs_batch.shape[0])
+
+        actions = []
+        for idx, single_obs in enumerate(obs_batch):
+            state_dict = parse_observation(single_obs, "quaternion")
+            controller = self.controllers[idx]
+            action = controller.compute_control(state_dict)
+            controller.post_step_update()
+            actions.append(np.asarray(action, dtype=np.float32).flatten())
+
+        actions = np.stack(actions, axis=0)
+        return actions if batched else actions[0]
+
     def reset(self):
-        self.gnc.reset()
-    
+        for controller in self.controllers:
+            controller.reset()
+
     def get_telemetry(self):
-        return self.gnc.get_telemetry()
-    
+        if len(self.controllers) == 1:
+            return self.controllers[0].get_telemetry()
+        return [controller.get_telemetry() for controller in self.controllers]
+
     def get_fuel_report(self):
-        return self.gnc.get_fuel_report()
-    
+        if len(self.controllers) == 1:
+            return self.controllers[0].get_fuel_report()
+        return [controller.get_fuel_report() for controller in self.controllers]
+
     def set_env(self, env):
         super().set_env(env)
-        
-        if hasattr(env, 'observation_space'):
+        num_envs = getattr(env, "num_envs", 1)
+        self._ensure_controller_count(num_envs)
+
+        if hasattr(env, "observation_space"):
             obs_shape = env.observation_space.shape
-            print(f"Environment observation space: {obs_shape}")
-        
-        if hasattr(env, 'action_space'):
+
+        if hasattr(env, "action_space"):
             action_shape = env.action_space.shape
-            print(f"Environment action space: {action_shape}")
