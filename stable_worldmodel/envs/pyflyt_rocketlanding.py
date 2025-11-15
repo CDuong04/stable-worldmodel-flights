@@ -256,7 +256,7 @@ class RocketLandingEnv(RocketBaseEnv):
         """
         if options is None:
             options = {
-                "randomize_drop": True,
+                "randomize_drop": False,
                 "accelerate_drop": True,
             }
 
