@@ -17,19 +17,11 @@ import stable_worldmodel as swm
 class RocketLandingEnv(RocketBaseEnv):
     """Rocket Landing Environment.
 
-    Actions are finlet_x, finlet_y, finlet_roll, booster ignition, throttle, booster gimbal x, booster gimbal y
-    The goal is to land the rocket on the landing pad.
+    Actions: [finlet_x, finlet_y, finlet_roll, ignition, throttle, gimbal_x, gimbal_y]
 
-    Args:
-        sparse_reward (bool): whether to use sparse rewards or not.
-        ceiling (float): the absolute ceiling of the flying area.
-        max_displacement (float): the maximum horizontal distance the rocket can go.
-        max_duration_seconds (float): maximum simulation time of the environment.
-        angle_representation (Literal["euler", "quaternion"]): can be "euler" or "quaternion".
-        agent_hz (int): looprate of the agent to environment interaction.
-        render_mode (None | Literal["human", "rgb_array"]): render_mode
-        render_resolution (tuple[int, int]): render_resolution.
-
+    Observation (17D):
+        [0:3] position, [3:6] velocity, [6:10] quaternion (wxyz),
+        [10:13] angular_velocity, [13] fuel_fraction, [14:17] target_relative
     """
 
     def __init__(
@@ -43,19 +35,6 @@ class RocketLandingEnv(RocketBaseEnv):
         render_mode: None | Literal["human", "rgb_array"] = None,
         render_resolution: tuple[int, int] = (480, 480),
     ):
-        """__init__.
-
-        Args:
-            sparse_reward (bool): whether to use sparse rewards or not.
-            ceiling (float): the absolute ceiling of the flying area.
-            max_displacement (float): the maximum horizontal distance the rocket can go.
-            max_duration_seconds (float): maximum simulation time of the environment.
-            angle_representation (Literal["euler", "quaternion"]): can be "euler" or "quaternion".
-            agent_hz (int): looprate of the agent to environment interaction.
-            render_mode (None | Literal["human", "rgb_array"]): render_mode
-            render_resolution (tuple[int, int]): render_resolution.
-
-        """
         super().__init__(
             start_pos=np.array([[0.0, 0.0, ceiling * 0.9]]),
             start_orn=np.array([[0.0, 0.0, 0.0]]),
@@ -68,85 +47,60 @@ class RocketLandingEnv(RocketBaseEnv):
             render_resolution=render_resolution,
         )
 
-        """GYMNASIUM STUFF"""
-        # Observation space: 17 values total
-        # obs[0:3]   - position (x, y, z) [meters]
-        # obs[3:6]   - velocity (vx, vy, vz) [m/s]
-        # obs[6:10]  - quaternion (w, x, y, z) [unitless]
-        # obs[10:13] - angular_velocity (wx, wy, wz) [rad/s]
-        # obs[13]    - fuel_fraction [0-1]
-        # obs[14:17] - target_relative (dx, dy, dz) [meters]
         self.observation_space = Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(17,),
-            dtype=np.float64,
+            low=-np.inf, high=np.inf, shape=(17,), dtype=np.float64,
         )
-        # Override bounds for specific indices
-        self.observation_space.low[13] = 0.0  # fuel_fraction min
-        self.observation_space.high[13] = 1.0  # fuel_fraction max
-
-        # the landing pad
-        # file_dir = os.path.dirname(os.path.realpath(__file__))
-        # self.targ_obj_dir = os.path.join(file_dir, "../../models/landing_pad.urdf")
+        self.observation_space.low[13] = 0.0
+        self.observation_space.high[13] = 1.0
 
         pyflyt_dir = os.path.dirname(os.path.realpath(PyFlyt.__file__))
         self.targ_obj_dir = os.path.join(pyflyt_dir, "models/landing_pad.urdf")
 
-        """CONSTANTS"""
         self.sparse_reward = sparse_reward
 
-        """VARIATION SPACE"""
         self.variation_space = swm.spaces.Dict(
             {
                 "rocket": swm.spaces.Dict(
                     {
                         "body_color": swm.spaces.RGBBox(
-                            init_value=np.array([255, 204, 0], dtype=np.uint8)  # yellow
+                            init_value=np.array([255, 204, 0], dtype=np.uint8)
                         ),
                         "fin_color": swm.spaces.RGBBox(
-                            init_value=np.array([51, 51, 51], dtype=np.uint8)  # grey
+                            init_value=np.array([51, 51, 51], dtype=np.uint8)
                         ),
                         "leg_color": swm.spaces.RGBBox(
-                            init_value=np.array([0, 0, 0], dtype=np.uint8)  # black
+                            init_value=np.array([0, 0, 0], dtype=np.uint8)
                         ),
                         "booster_color": swm.spaces.RGBBox(
-                            init_value=np.array([51, 51, 51], dtype=np.uint8)  # grey
+                            init_value=np.array([51, 51, 51], dtype=np.uint8)
                         ),
                     }
                 ),
                 "pad": swm.spaces.Dict(
                     {
                         "color": swm.spaces.RGBBox(
-                            init_value=np.array([200, 200, 200], dtype=np.uint8)  # light grey
+                            init_value=np.array([200, 200, 200], dtype=np.uint8)
                         ),
                     }
                 ),
                 "environment": swm.spaces.Dict(
                     {
                         "sky_color": swm.spaces.RGBBox(
-                            init_value=np.array([135, 206, 235], dtype=np.uint8)  # sky blue
+                            init_value=np.array([135, 206, 235], dtype=np.uint8)
                         ),
                         "start_height_ratio": swm.spaces.Box(
-                            low=0.7,
-                            high=0.95,
-                            init_value=0.9,
-                            shape=(),
-                            dtype=np.float32,
+                            low=0.7, high=0.95, init_value=0.9,
+                            shape=(), dtype=np.float32,
                         ),
                         "start_horizontal_offset": swm.spaces.Box(
-                            low=-20.0,
-                            high=20.0,
+                            low=-20.0, high=20.0,
                             init_value=np.array([0.0, 0.0], dtype=np.float32),
-                            shape=(2,),
-                            dtype=np.float32,
+                            shape=(2,), dtype=np.float32,
                         ),
                         "start_tilt": swm.spaces.Box(
-                            low=-0.2,
-                            high=0.2,
+                            low=-0.2, high=0.2,
                             init_value=np.array([0.0, 0.0], dtype=np.float32),
-                            shape=(2,),
-                            dtype=np.float32,
+                            shape=(2,), dtype=np.float32,
                         ),
                     }
                 ),
@@ -154,69 +108,45 @@ class RocketLandingEnv(RocketBaseEnv):
             sampling_order=["environment", "rocket", "pad"],
         )
 
-        # Store original parameters
         self.ceiling = ceiling
         self.original_start_pos = np.array([[0.0, 0.0, ceiling * 0.9]])
-
-        # Track modified URDF paths
         self.modified_rocket_urdf = None
         self.modified_pad_urdf = None
 
     def _modify_rocket_urdf(self) -> str:
-        """Modify rocket URDF with current variation colors.
-
-        Returns:
-            Path to the modified URDF file.
-        """
-        # Find the original rocket URDF
         pyflyt_dir = os.path.dirname(os.path.realpath(PyFlyt.__file__))
         original_urdf = os.path.join(pyflyt_dir, "models/vehicles/rocket/rocket.urdf")
 
-        # Parse the URDF
         tree = ET.parse(original_urdf)
         root = tree.getroot()
 
-        # Get colors from variation space (convert from 0-255 to 0-1)
         body_color = self.variation_space["rocket"]["body_color"].value / 255.0
         fin_color = self.variation_space["rocket"]["fin_color"].value / 255.0
         leg_color = self.variation_space["rocket"]["leg_color"].value / 255.0
-        booster_color = self.variation_space["rocket"]["booster_color"].value / 255.0
 
-        # Update material colors
         for material in root.findall(".//material[@name='yellow']"):
             color = material.find("color")
             color.set("rgba", f"{body_color[0]:.3f} {body_color[1]:.3f} {body_color[2]:.3f} 1.0")
 
         for material in root.findall(".//material[@name='grey']"):
             color = material.find("color")
-            # Use fin color for grey materials
             color.set("rgba", f"{fin_color[0]:.3f} {fin_color[1]:.3f} {fin_color[2]:.3f} 1.0")
 
         for material in root.findall(".//material[@name='black']"):
             color = material.find("color")
             color.set("rgba", f"{leg_color[0]:.3f} {leg_color[1]:.3f} {leg_color[2]:.3f} 1.0")
 
-        # Write to temporary file
         temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".urdf", delete=False)
         tree.write(temp_file.name)
         temp_file.close()
-
         return temp_file.name
 
     def _modify_pad_urdf(self) -> str:
-        """Modify landing pad URDF with current variation colors.
-
-        Returns:
-            Path to the modified URDF file.
-        """
-        # Parse the original landing pad URDF
         tree = ET.parse(self.targ_obj_dir)
         root = tree.getroot()
 
-        # Get color from variation space (convert from 0-255 to 0-1)
         pad_color = self.variation_space["pad"]["color"].value / 255.0
 
-        # Add material if it doesn't exist
         material = root.find(".//material[@name='pad_material']")
         if material is None:
             material = ET.Element("material", name="pad_material")
@@ -227,7 +157,6 @@ class RocketLandingEnv(RocketBaseEnv):
             color = material.find("color")
             color.set("rgba", f"{pad_color[0]:.3f} {pad_color[1]:.3f} {pad_color[2]:.3f} 1.0")
 
-        # Apply material to visual
         visual = root.find(".//visual")
         if visual is not None:
             mat_ref = visual.find("material")
@@ -235,80 +164,56 @@ class RocketLandingEnv(RocketBaseEnv):
                 mat_ref = ET.SubElement(visual, "material")
             mat_ref.set("name", "pad_material")
 
-        # Write to temporary file
         temp_file = tempfile.NamedTemporaryFile(mode="w", suffix=".urdf", delete=False)
         tree.write(temp_file.name)
         temp_file.close()
-
         return temp_file.name
 
     def reset(self, *, seed: None | int = None, options: None | dict[str, Any] = None) -> tuple[np.ndarray, dict]:
-        """Resets the environment.
-
-        Args:
-            seed: int
-            options: dict with optional keys:
-                - 'variation': list of variation names to sample (e.g., ['rocket.body_color', 'pad.color'])
-                  Use ['all'] to sample all variations
-                - 'randomize_drop': whether to add random initial velocities
-                - 'accelerate_drop': whether to add downward velocity
-
-        """
         if options is None:
-            options = {
-                "randomize_drop": False,
-                "accelerate_drop": True,
-            }
+            options = {"randomize_drop": False, "accelerate_drop": True}
 
-        # Handle variations
         self.variation_space.seed(seed)
         self.variation_space.reset()
 
         variation_options = options.get("variation", [])
         if variation_options:
             from collections.abc import Sequence
-
             if not isinstance(variation_options, Sequence):
                 raise ValueError("variation option must be a Sequence containing variation names to sample")
-
             self.variation_space.update(variation_options)
 
-        # Apply start position variations
         start_height_ratio = self.variation_space["environment"]["start_height_ratio"].value
         start_offset = self.variation_space["environment"]["start_horizontal_offset"].value
         start_tilt = self.variation_space["environment"]["start_tilt"].value
 
-        # Update start position and orientation based on variations
         self.start_pos = np.array(
             [[start_offset[0], start_offset[1], self.ceiling * start_height_ratio]], dtype=np.float64
         )
         self.start_orn = np.array([[start_tilt[0], start_tilt[1], 0.0]], dtype=np.float64)
 
+        starting_fuel_ratio = options.get('starting_fuel_ratio', 0.05) if options else 0.05
+
         super().begin_reset(
-            seed=seed,
-            options=options,
-            drone_options={"starting_fuel_ratio": 0.05},
+            seed=seed, options=options,
+            drone_options={"starting_fuel_ratio": starting_fuel_ratio},
         )
 
-        # reset the tracked parameters
         self.landing_pad_contact = 0.0
         self.ang_vel = np.zeros((3,))
         self.lin_vel = np.zeros((3,))
         self.lin_pos = np.zeros((3,))
         self.ground_lin_vel = np.zeros((3,))
-
         self.previous_ang_vel = np.zeros((3,))
         self.previous_lin_vel = np.zeros((3,))
         self.previous_lin_pos = np.zeros((3,))
         self.previous_ground_lin_vel = np.zeros((3,))
 
-        # Apply color variations to rocket and pad
         if variation_options and (
             "all" in variation_options
             or any("rocket" in v for v in variation_options)
             or any("pad" in v for v in variation_options)
         ):
-            # Modify and load landing pad with variations
             if self.modified_pad_urdf:
                 try:
                     os.unlink(self.modified_pad_urdf)
@@ -319,17 +224,15 @@ class RocketLandingEnv(RocketBaseEnv):
         else:
             pad_urdf_path = self.targ_obj_dir
 
-        # Load the landing pad (target is at origin)
-        self.landing_pad_position = np.array([0.0, 0.0, 0.0])  # Target position for landing
+        self.landing_pad_position = np.array([0.0, 0.0, 0.0])
         self.landing_pad_id = self.env.loadURDF(
             pad_urdf_path,
-            basePosition=np.array([0.0, 0.0, 0.1]),  # Pad visual is slightly above ground
+            basePosition=np.array([0.0, 0.0, 0.1]),
             useFixedBase=True,
         )
 
         super().end_reset(seed, options)
 
-        # Apply rocket color variations using changeVisualShape
         if variation_options and ("all" in variation_options or any("rocket" in v for v in variation_options)):
             rocket_id = self.env.drones[0].Id
             body_color = self.variation_space["rocket"]["body_color"].value / 255.0
@@ -337,19 +240,16 @@ class RocketLandingEnv(RocketBaseEnv):
             leg_color = self.variation_space["rocket"]["leg_color"].value / 255.0
             booster_color = self.variation_space["rocket"]["booster_color"].value / 255.0
 
-            # Get number of links in the rocket
             num_joints = p.getNumJoints(rocket_id, physicsClientId=self.env._client)
 
-            # Change colors for each link based on joint names
             for i in range(-1, num_joints):
                 if i == -1:
-                    # Base link (main rocket body)
                     p.changeVisualShape(
                         rocket_id, i, rgbaColor=list(body_color) + [1.0], physicsClientId=self.env._client
                     )
                 else:
                     joint_info = p.getJointInfo(rocket_id, i, physicsClientId=self.env._client)
-                    link_name = joint_info[12].decode("utf-8")  # link name
+                    link_name = joint_info[12].decode("utf-8")
 
                     if "fin" in link_name.lower():
                         p.changeVisualShape(
@@ -364,64 +264,32 @@ class RocketLandingEnv(RocketBaseEnv):
                             rocket_id, i, rgbaColor=list(booster_color) + [1.0], physicsClientId=self.env._client
                         )
 
-
-        # Generate goal image: render the rocket on the landing pad
-        # Save the current initial state
         init_state_id = p.saveState(physicsClientId=self.env._client)
-
-        # Set rocket to landed position on the pad (upright, centered)
-        landed_position = [0.0, 0.0, 1.5]  # slightly above pad
-        landed_orientation = p.getQuaternionFromEuler([0.0, 0.0, 0.0])  # upright
         p.resetBasePositionAndOrientation(
             self.env.drones[0].Id,
-            landed_position,
-            landed_orientation,
+            [0.0, 0.0, 1.5],
+            p.getQuaternionFromEuler([0.0, 0.0, 0.0]),
             physicsClientId=self.env._client,
         )
-
-        # Render to get the goal image
         self.current_goal = self.render()
-
-        # Restore the original initial state
         p.restoreState(stateId=init_state_id, physicsClientId=self.env._client)
         p.removeState(stateUniqueId=init_state_id, physicsClientId=self.env._client)
 
-        # Add goal to info dict
         self.info["goal"] = self.current_goal
-
         return self.state, self.info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
-        """Step the environment.
-
-        Args:
-            action: the action to take
-
-        Returns:
-            state, reward, terminated, truncated, info
-        """
         state, reward, terminated, truncated, info = super().step(action)
         info["goal"] = self.current_goal
         return state, reward, terminated, truncated, info
 
     def compute_state(self) -> None:
-        """Computes the state of the current timestep.
-
-        Constructs observation in the required format:
-        obs[0:3]   - position (x, y, z) [meters]
-        obs[3:6]   - velocity (vx, vy, vz) [m/s]
-        obs[6:10]  - quaternion (w, x, y, z) [unitless]
-        obs[10:13] - angular_velocity (wx, wy, wz) [rad/s]
-        obs[13]    - fuel_fraction [0-1]
-        obs[14:17] - target_relative (dx, dy, dz) [meters]
-        """
-        # update the previous values to current values
+        """Observation: [pos(3), vel(3), quat_wxyz(4), ang_vel(3), fuel(1), target_rel(3)]"""
         self.previous_ang_vel = self.ang_vel.copy()
         self.previous_lin_vel = self.lin_vel.copy()
         self.previous_lin_pos = self.lin_pos.copy()
         self.previous_ground_lin_vel = self.ground_lin_vel.copy()
 
-        # update current values
         (
             self.ang_vel,
             self.ang_pos,
@@ -431,96 +299,70 @@ class RocketLandingEnv(RocketBaseEnv):
         ) = super().compute_attitude()
         aux_state = super().compute_auxiliary()
 
-        # compute rotation matrices for converting things (needed for reward)
         rotation = np.array(p.getMatrixFromQuaternion(quaternion)).reshape(3, 3)
-
-        # compute ground velocity for reward computation later
         self.ground_lin_vel = np.matmul(self.lin_vel, rotation.T)
 
-        # Extract fuel fraction from auxiliary state
-        # aux_state structure: [lifting(4), booster(3), gimbal(2)]
-        # booster states: [ignition, fuel_ratio, throttle]
-        # fuel_fraction is at index 5 (4 lifting + 1 for ignition = 5)
+        # aux_state: [lifting(4), booster(3: ignition, fuel_ratio, throttle), gimbal(2)]
         fuel_fraction = aux_state[5]
-
-        # Calculate target relative position (target - current_position)
         target_relative = self.landing_pad_position - self.lin_pos
 
-        # Construct observation in required format
-        # Quaternion in PyBullet is (x, y, z, w), we need (w, x, y, z)
+        # PyBullet quat is (xyzw), convert to (wxyz)
         quaternion_wxyz = np.array([quaternion[3], quaternion[0], quaternion[1], quaternion[2]])
 
-        self.state = np.concatenate(
-            [
-                self.lin_pos,  # position (x, y, z) [0:3]
-                self.lin_vel,  # velocity (vx, vy, vz) [3:6]
-                quaternion_wxyz,  # quaternion (w, x, y, z) [6:10]
-                self.ang_vel,  # angular_velocity (wx, wy, wz) [10:13]
-                np.array([fuel_fraction]),  # fuel_fraction [13]
-                target_relative,  # target_relative (dx, dy, dz) [14:17]
-            ],
-            axis=-1,
-        )
+        self.state = np.concatenate([
+            self.lin_pos,
+            self.lin_vel,
+            quaternion_wxyz,
+            self.ang_vel,
+            np.array([fuel_fraction]),
+            target_relative,
+        ], axis=-1)
 
     def compute_term_trunc_reward(self) -> None:
-        """Computes the termination, truncation, and reward of the current timestep."""
         super().compute_base_term_trunc_reward(collision_ignore_mask=[self.env.drones[0].Id, self.landing_pad_id])
 
-        # compute reward
         if not self.sparse_reward:
-            # progress to the pad
-            lateral_progress = float(  # noqa
+            lateral_progress = float(
                 np.linalg.norm(self.previous_lin_pos[:2]) - np.linalg.norm(self.lin_pos[:2])
             )
             vertical_progress = float(self.previous_lin_pos[-1] - self.lin_pos[-1])
+            lateral_distance = np.linalg.norm(self.lin_pos[:2]) + 0.1
 
-            # absolute distances to the pad
-            lateral_distance = np.linalg.norm(self.lin_pos[:2]) + 0.1  # noqa
-
-            # deceleration as long as we're still falling
-            # (x+1)/(e^x)
             deceleration_progress = (
                 (self.ground_lin_vel[-1] - self.previous_ground_lin_vel[-1] + 1.0)
-                # scale reward to height, lower height more deceleration is better
                 / np.exp(self.lin_pos[-1])
-                # bonus if still descending, penalty if started to ascend
                 * (1.0 if (self.ground_lin_vel[-1] < 0.0) else -1.0)
             )
 
-            # dictionarize reward components for debugging
-
-            # composite reward together
             self.reward += (
-                -0.3  # negative offset to discourage staying in the air
-                + (0.3 / lateral_distance)  # reward for staying over landing pad
-                + (10.0 * lateral_progress)  # reward for making progress to landing pad
-                + (0.2 * vertical_progress)  # reward for descending
-                + (4.0 * deceleration_progress)  # reward for decelerating
-                - (1.0 * abs(self.ang_vel[-1]))  # minimize spinning
-                - (1.0 * np.linalg.norm(self.ang_pos[:2]))  # minimize aggressive angles
+                -0.3
+                + (0.3 / lateral_distance)
+                + (10.0 * lateral_progress)
+                + (0.2 * vertical_progress)
+                + (4.0 * deceleration_progress)
+                - (1.0 * abs(self.ang_vel[-1]))
+                - (1.0 * np.linalg.norm(self.ang_pos[:2]))
             )
 
-        # check if we touched the landing pad
         if self.env.contact_array[self.env.drones[0].Id, self.landing_pad_id]:
             self.landing_pad_contact = 1.0
-
-            # the reward minus collision speed
             self.reward += 5.0 - (0.3 * abs(self.ground_lin_vel[-1]))
         else:
             self.landing_pad_contact = 0.0
             return
 
- 
+        # Fatal collision: ang_vel > 10 rad/s or lin_vel > 5 m/s
         if np.linalg.norm(self.previous_ang_vel) > 10.0 or np.linalg.norm(self.previous_lin_vel) > 5.0:
             self.termination |= True
             self.info["fatal_collision"] = True
             return
 
+        # Success: ang_vel < 5, lin_vel < 2 m/s, tilt < 0.5 rad, lateral < 5m
         if (
             np.linalg.norm(self.previous_ang_vel) < 5.0
-            and np.linalg.norm(self.previous_lin_vel) < 0.5
-            and np.linalg.norm(self.ang_pos[:2]) < 0.5 # NEED TO ADJUST WITH CORRECT COORDINATE FRAME ORIENTATION
-            and np.linalg.norm(self.lin_pos[:2]) < 3.0
+            and np.linalg.norm(self.previous_lin_vel) < 2.0
+            and np.linalg.norm(self.ang_pos[:2]) < 0.5
+            and np.linalg.norm(self.lin_pos[:2]) < 5.0
         ):
             self.truncation |= True
             self.info["env_complete"] = True
