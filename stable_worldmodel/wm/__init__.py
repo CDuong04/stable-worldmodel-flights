@@ -1,10 +1,7 @@
-from . import dinowm
-from .dinowm import DINOWM
-from .dummy import DummyWorldModel  # noqa: F401
+from .loss import *  # noqa: F403
+from .utils import *  # noqa: F403
 
-
-__all__ = [
-    "DummyWorldModel",
-    "DINOWM",
-    "dinowm",
-]
+# Baselines
+from .gcrl import *  # noqa: F403
+from .prejepa import *  # noqa: F403
+from .lewm import *  # noqa: F403
