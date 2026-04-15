@@ -27,7 +27,7 @@ class RocketLandingEnv(RocketBaseEnv):
     def __init__(
         self,
         sparse_reward: bool = False,
-        ceiling: float = 500.0,
+        ceiling: float = 250.0,
         max_displacement: float = 200.0,
         max_duration_seconds: float = 30.0,
         angle_representation: Literal["euler", "quaternion"] = "quaternion",
@@ -351,16 +351,19 @@ class RocketLandingEnv(RocketBaseEnv):
             self.landing_pad_contact = 0.0
             return
 
-        # Fatal collision: ang_vel > 10 rad/s or lin_vel > 5 m/s
-        if np.linalg.norm(self.previous_ang_vel) > 10.0 or np.linalg.norm(self.previous_lin_vel) > 5.0:
+        # Fatal collision: ang_vel > 10 rad/s or world-frame speed > 5 m/s
+        # Use ground_lin_vel (world frame) not lin_vel (body frame).
+        # Body-frame velocity includes tilt-induced lateral components that
+        # make even gentle touchdowns register as fatal when slightly tilted.
+        if np.linalg.norm(self.ang_vel) > 10.0 or np.linalg.norm(self.ground_lin_vel) > 5.0:
             self.termination |= True
             self.info["fatal_collision"] = True
             return
 
-        # Success: ang_vel < 5, lin_vel < 2 m/s, tilt < 0.5 rad, lateral < 5m
+        # Success: ang_vel < 5, world-frame speed < 2 m/s, tilt < 0.5 rad, lateral < 5m
         if (
-            np.linalg.norm(self.previous_ang_vel) < 5.0
-            and np.linalg.norm(self.previous_lin_vel) < 2.0
+            np.linalg.norm(self.ang_vel) < 5.0
+            and np.linalg.norm(self.ground_lin_vel) < 2.0
             and np.linalg.norm(self.ang_pos[:2]) < 0.5
             and np.linalg.norm(self.lin_pos[:2]) < 5.0
         ):

@@ -220,3 +220,34 @@ dataset/
 *.mp4
 lightning_logs/
 old_tests/
+
+# Rocket landing experiments
+data/
+models/
+checkpoints/
+.venv_rocket/
+slurm-*.out
+*.pkl
+*.npz
+
+# LaTeX / paper files
+*.tex
+*.sty
+*.bst
+*.bbl
+*.blg
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+references.bib
+
+# SLURM batch scripts
+*.sbatch
+
+# Unused RL training scripts (not part of world model pipeline)
+scripts/train_rajs_ppo.py
+scripts/train_rocket_sweep.py
+scripts/train_sac.py
+scripts/evaluate_rocket.py
+scripts/setup_and_test.sh
