@@ -205,14 +205,20 @@ node_modules/
 
 # custom
 logs/
+.claude/
 .vscode/
 *.sh
+**/.mypy_cache/**
+**/__pycache__/**
+**/*.pyc
+!scripts/minerl.sh
 
 outputs/
 multirun/
 checkpoints/
 dino_wm_ckpt/
 pusht_noise/
+results/
 wandb/
 videos/
 dataset/
@@ -220,3 +226,4 @@ dataset/
 *.mp4
 lightning_logs/
 old_tests/
+local_scripts/
