@@ -11,15 +11,25 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 import numpy as np
 
+from stable_worldmodel.wm.lewm import LeWM
 from stable_worldmodel.wm.lewm.module import (
-    JEPA,
-    ARPredictor,
+    Predictor,
     Embedder,
     MLP,
-    SIGReg,
 )
+from stable_worldmodel.wm.loss import SIGReg
+from transformers import ViTConfig, ViTModel
+
+VIT_SIZES = {
+    'tiny':  {'hidden_size': 192, 'num_hidden_layers': 12, 'num_attention_heads': 3,  'intermediate_size': 768},
+    'small': {'hidden_size': 384, 'num_hidden_layers': 12, 'num_attention_heads': 6,  'intermediate_size': 1536},
+    'base':  {'hidden_size': 768, 'num_hidden_layers': 12, 'num_attention_heads': 12, 'intermediate_size': 3072},
+}
 from lightning.pytorch.callbacks import Callback
 from stable_worldmodel.wm.utils import save_pretrained
+
+if not OmegaConf.has_resolver('eval'):
+    OmegaConf.register_new_resolver('eval', eval)
 
 
 def get_img_preprocessor(source: str, target: str, img_size: int = 224):
@@ -154,19 +164,19 @@ def run(cfg):
     ##       model / optim      ##
     ##############################
 
-    encoder = spt.backbone.utils.vit_hf(
-        cfg.encoder_scale,
-        patch_size=cfg.patch_size,
+    vit_config = ViTConfig(
         image_size=cfg.img_size,
-        pretrained=False,
-        use_mask_token=False,
+        patch_size=cfg.patch_size,
+        num_channels=3,
+        **VIT_SIZES[cfg.encoder_scale],
     )
+    encoder = ViTModel(vit_config, add_pooling_layer=False, use_mask_token=False)
 
     hidden_dim = encoder.config.hidden_size
     embed_dim = cfg.wm.get('embed_dim', hidden_dim)
     effective_act_dim = cfg.data.dataset.frameskip * cfg.wm.action_dim
 
-    predictor = ARPredictor(
+    predictor = Predictor(
         num_frames=cfg.wm.history_size,
         input_dim=embed_dim,
         hidden_dim=hidden_dim,
@@ -190,7 +200,7 @@ def run(cfg):
         norm_fn=torch.nn.BatchNorm1d,
     )
 
-    world_model = JEPA(
+    world_model = LeWM(
         encoder=encoder,
         predictor=predictor,
         action_encoder=action_encoder,
@@ -244,7 +254,7 @@ def run(cfg):
         callbacks=[object_dump_callback],
         num_sanity_val_steps=1,
         logger=logger,
-        enable_checkpointing=True,
+        enable_checkpointing=False,
     )
 
     manager = spt.Manager(
