@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from typing import Any
-
+from stable_worldmodel.envs import register
 import gymnasium
 import numpy as np
 import pybullet as p
 
 from stable_worldmodel.envs.pyflyt_rocketlanding import RocketLandingEnv
+from stable_worldmodel.perturbations import (
+    OUWind, StepGust, LateralKick,
+    WIND_PRESETS, LATERAL_KICK_PRESETS,
+)
 
 PERTURBATION_PRESETS = {
     "easy": {
@@ -89,6 +93,11 @@ class RocketLandingExtEnv(RocketLandingEnv):
         self.ou_pad = None
         self.moving_pad_enabled = False
         self._perturbation_rng = np.random.default_rng()
+        # In-flight wind / kick disturbances (off by default).
+        self.wind = None
+        self.gust = None
+        self.lateral_kick = None
+        self._wind_log: list[np.ndarray] = []
 
     def reset(
         self,
@@ -106,6 +115,9 @@ class RocketLandingExtEnv(RocketLandingEnv):
         pad_sigma_z = options.pop("pad_sigma_z", 0.3)
         pad_theta = options.pop("pad_theta", 0.5)
         pad_max_radius = options.pop("pad_max_radius", 8.0)
+        wind_level = options.pop("wind_level", None)         # "calm"|"light"|"gust"|"storm"
+        gust_enabled = options.pop("gust_enabled", False)
+        lateral_kick_level = options.pop("lateral_kick_level", None)  # "light"|"moderate"|"severe"
 
         self._perturbation_rng = np.random.default_rng(seed)
         rng = self._perturbation_rng
@@ -181,10 +193,39 @@ class RocketLandingExtEnv(RocketLandingEnv):
         self._pad_position = self.landing_pad_position.copy()
         self._perturbation_level = perturbation_level or "default"
 
+        # Initialise in-flight disturbances
+        if wind_level is not None:
+            wind_cfg = WIND_PRESETS.get(wind_level)
+            if wind_cfg is None:
+                raise ValueError(
+                    f"Unknown wind_level '{wind_level}'. "
+                    f"Choose from: {list(WIND_PRESETS.keys())}"
+                )
+            self.wind = OUWind(cfg=wind_cfg, seed=seed)
+        else:
+            self.wind = None
+
+        self.gust = StepGust(seed=seed) if gust_enabled else None
+
+        if lateral_kick_level is not None:
+            kick_cfg = LATERAL_KICK_PRESETS.get(lateral_kick_level)
+            if kick_cfg is None:
+                raise ValueError(
+                    f"Unknown lateral_kick_level '{lateral_kick_level}'. "
+                    f"Choose from: {list(LATERAL_KICK_PRESETS.keys())}"
+                )
+            self.lateral_kick = LateralKick(cfg=kick_cfg, seed=seed)
+        else:
+            self.lateral_kick = None
+
+        self._wind_log = []
+        # Don't stash disturbance config in `info` — the env wrapper chain
+        # enforces that info keys are injected by the wrappers themselves.
+
         return obs, info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
-        """Step the environment with optional moving pad update."""
+        """Step the environment with optional moving pad + wind disturbance."""
         if self.moving_pad_enabled and self.ou_pad is not None:
             pad_pos, pad_vel = self.ou_pad.step()
             base_pad_pos = np.array([0.0, 0.0, 0.1])
@@ -200,15 +241,36 @@ class RocketLandingExtEnv(RocketLandingEnv):
         else:
             pad_vel = np.zeros(3)
 
+        # Apply wind / gust / kick force in world frame at the rocket centre
+        # of mass *before* the physics step. PyBullet integrates over dt.
+        F_wind = np.zeros(3)
+        if self.wind is not None:
+            F_wind = F_wind + self.wind.step()
+        if self.gust is not None:
+            F_wind = F_wind + self.gust.step()
+        if self.lateral_kick is not None:
+            F_wind = F_wind + self.lateral_kick.step()
+        if np.linalg.norm(F_wind) > 0:
+            rocket_id = self.env.drones[0].Id
+            p.applyExternalForce(
+                objectUniqueId=rocket_id,
+                linkIndex=-1,
+                forceObj=F_wind.tolist(),
+                posObj=[0.0, 0.0, 0.0],
+                flags=p.LINK_FRAME if False else p.WORLD_FRAME,
+                physicsClientId=self.env._client,
+            )
+            self._wind_log.append(F_wind.copy())
+
         obs, reward, terminated, truncated, info = super().step(action)
 
         self._pad_velocity = pad_vel
         self._pad_position = self.landing_pad_position.copy()
+        # Avoid adding new info keys — upstream wrapper asserts no collision.
 
         return obs, reward, terminated, truncated, info
 
-
-gymnasium.register(
+register(
     id="swm/PFRocketLandingExt-v0",
     entry_point="stable_worldmodel.envs.rocket_landing_ext:RocketLandingExtEnv",
 )

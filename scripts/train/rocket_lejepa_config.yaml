@@ -1,0 +1,62 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+
+wandb:
+  enable: false
+  project: rocketjepa
+  entity: null
+
+dataset_name: rocket_expert_all
+output_model_name: rocket_lejepa_wm
+
+trainer:
+  max_epochs: 200
+  strategy: ddp
+  devices: auto
+  accelerator: gpu
+  precision: 16-mixed
+
+batch_size: 32
+num_workers: 8
+train_split: 0.9
+
+image_size: 224
+patch_size: 16
+
+n_steps: 3
+frameskip: 2
+
+dinowm:
+  history_size: 3
+  num_preds: 1
+  proprio_dim: 17
+  proprio_embed_dim: 32
+  action_dim: 7
+  action_embed_dim: 32
+
+predictor:
+  depth: 8
+  heads: 16
+  mlp_dim: 2048
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+predictor_lr: 3e-4
+proprio_encoder_lr: 3e-4
+action_encoder_lr: 3e-4
+
+# LeJEPA addition: SIGReg on predicted DINO-patch embeddings.
+lejepa_wm:
+  lambda_sigreg: 0.02
+  n_projections: 1024
+  n_frequencies: 17
+  freq_min: 0.1
+  freq_max: 5.0
+
+dump_object: True

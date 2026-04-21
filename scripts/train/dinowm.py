@@ -253,11 +253,16 @@ def run(cfg):
     data = get_data(cfg)
     world_model = get_world_model(cfg)
 
-    cache_dir = swm.data.get_cache_dir()
-    dump_object_callback = ModelObjectCallBack(
-        dirpath=cache_dir, filename=f"{cfg.output_model_name}_object", epoch_interval=1
+    import os
+    ckpt_dir = os.environ.get(
+        "WM_CKPT_DIR",
+        f"/oscar/scratch/aiyer40/{cfg.output_model_name}",
     )
-    checkpoint_callback = ModelCheckpoint(dirpath=cache_dir, filename=f"{cfg.output_model_name}_weights")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    dump_object_callback = ModelObjectCallBack(
+        dirpath=ckpt_dir, filename=f"{cfg.output_model_name}_object", epoch_interval=10
+    )
+    checkpoint_callback = ModelCheckpoint(dirpath=ckpt_dir, filename=f"{cfg.output_model_name}_weights")
 
     trainer = pl.Trainer(
         **cfg.trainer,
@@ -267,7 +272,9 @@ def run(cfg):
         enable_checkpointing=True,
     )
 
-    manager = spt.Manager(trainer=trainer, module=world_model, data=data)
+    resume_ckpt = os.environ.get("WM_RESUME_CKPT")
+    manager = spt.Manager(trainer=trainer, module=world_model, data=data,
+                          ckpt_path=resume_ckpt)
     manager()
 
 
