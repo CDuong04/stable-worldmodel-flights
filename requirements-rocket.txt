@@ -1,0 +1,12 @@
+# Requirements for RocketLanding environment integration
+# Install with: pip install -r requirements-rocket.txt
+
+# Core PyFlyt dependency
+PyFlyt>=0.9.0
+
+# Optional: GPU-accelerated rendering (recommended)
+# Uncomment if you want better rendering performance:
+# PyFlyt[viz]>=0.9.0
+
+# Note: The base stable-worldmodel requirements should already be installed
+# If not, first run: uv pip install -e .

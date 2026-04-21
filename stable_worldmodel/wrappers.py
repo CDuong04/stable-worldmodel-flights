@@ -148,6 +148,8 @@ class EverythingToInfoWrapper(gym.Wrapper):
     def reset(self, *args, **kwargs):
         self._step_counter = 0
         obs, info = self.env.reset(*args, **kwargs)
+        # Create a copy of info to avoid issues with mutable dict reuse in underlying envs
+        info = dict(info)
         if type(obs) is not dict:
             _obs = {"observation": obs}
         else:
@@ -196,6 +198,8 @@ class EverythingToInfoWrapper(gym.Wrapper):
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         self._step_counter += 1
+        # Create a copy of info to avoid issues with mutable dict reuse in underlying envs
+        info = dict(info)
         if type(obs) is not dict:
             _obs = {"observation": obs}
         else:
