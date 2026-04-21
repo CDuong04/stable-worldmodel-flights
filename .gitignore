@@ -251,3 +251,6 @@ scripts/train_rocket_sweep.py
 scripts/train_sac.py
 scripts/evaluate_rocket.py
 scripts/setup_and_test.sh
+
+environment*.json
+requirements_frozen*.txt
