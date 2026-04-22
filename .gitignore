@@ -227,11 +227,11 @@ dataset/
 lightning_logs/
 lightning_logs/
 old_tests/
+local_scripts/
 
 # Rocket landing experiments
 data/
 models/
-checkpoints/
 .venv_rocket/
 slurm-*.out
 *.pkl
