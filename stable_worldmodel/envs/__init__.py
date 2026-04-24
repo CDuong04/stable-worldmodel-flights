@@ -50,7 +50,7 @@ register(
 
 register(
     id='swm/PFRocketLanding-v0',
-    entry_point='stable_worldmodel.envs.rocket_landing.pyflyt_rocketlanding:RocketLandingEnv',
+    entry_point='stable_worldmodel.envs.pyflyt_rocketlanding:RocketLandingEnv',
 )
 
 register(

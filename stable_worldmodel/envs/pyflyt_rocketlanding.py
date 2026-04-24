@@ -273,13 +273,15 @@ class RocketLandingEnv(RocketBaseEnv):
         )
         self.current_goal = self.render()
         p.restoreState(stateId=init_state_id, physicsClientId=self.env._client)
-        p.removeState(stateUniqueId=init_state_id, physicsClientId=self.env._client)
 
         self.info["goal"] = self.current_goal
-        return self.state, self.info
+        # PyFlyt reuses self.info across steps; copy so wrapper mutations don't leak back.
+        return self.state, dict(self.info)
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         state, reward, terminated, truncated, info = super().step(action)
+        # PyFlyt reuses self.info across steps; copy so wrapper mutations don't leak back.
+        info = dict(info)
         info["goal"] = self.current_goal
         return state, reward, terminated, truncated, info
 

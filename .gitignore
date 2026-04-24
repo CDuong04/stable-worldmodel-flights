@@ -6,6 +6,7 @@ core.*
 figures/
 old_experiments/
 toy_experiments/
+stable_worldmodel/datasets/
 __pycache__/
 *.py[cod]
 *$py.class

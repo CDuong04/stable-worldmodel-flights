@@ -63,3 +63,38 @@ def test_cartpole_expert_policy_supports_single_state_inputs():
     action = policy.get_action(info)
 
     assert action.shape == (1, 1)
+
+
+def test_cartpole_expert_policy_kicks_from_hanging_rest():
+    policy = CartpoleExpertPolicy(
+        noise_std=0.0,
+        burst_prob=0.0,
+        seed=0,
+    )
+
+    info = {
+        'qpos': np.array([[0.0, np.pi]], dtype=np.float32),
+        'qvel': np.array([[0.0, 0.0]], dtype=np.float32),
+    }
+
+    action = policy.get_action(info)
+
+    assert abs(action[0, 0]) > 0.5
+
+
+def test_cartpole_expert_policy_pushes_opposite_the_downward_lean():
+    policy = CartpoleExpertPolicy(
+        noise_std=0.0,
+        burst_prob=0.0,
+        seed=0,
+    )
+
+    # Slight right lean while hanging down should push cart left.
+    info = {
+        'qpos': np.array([[0.0, np.pi - 0.1]], dtype=np.float32),
+        'qvel': np.array([[0.0, 0.0]], dtype=np.float32),
+    }
+
+    action = policy.get_action(info)
+
+    assert action[0, 0] < 0.0
