@@ -112,6 +112,16 @@ class CartpoleDMControlWrapper(DMControlWrapper):
             }
         )
 
+    @property
+    def info(self):
+        info = super().info
+        proprio = np.concatenate([info['qpos'], info['qvel']]).astype(
+            np.float32
+        )
+        info['proprio'] = proprio
+        info['state'] = proprio.copy()
+        return info
+
     def apply_runtime_variations(self):
         """Apply gravity variation directly on the compiled physics model."""
         desired_gx = float(
