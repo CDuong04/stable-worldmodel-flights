@@ -18,8 +18,15 @@ set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
-export STABLEWM_HOME="${STABLEWM_HOME:-$SCRATCH/stablewm}"
+# Prefer user-set STABLEWM_HOME, then $SCRATCH (SLURM/HPC), then Oscar's
+# /oscar/scratch/$USER, then $HOME/stablewm as a last resort.
+DEFAULT_SCRATCH="${SCRATCH:-/oscar/scratch/$USER}"
+if [[ ! -d "$DEFAULT_SCRATCH" ]]; then
+  DEFAULT_SCRATCH="$HOME"
+fi
+export STABLEWM_HOME="${STABLEWM_HOME:-$DEFAULT_SCRATCH/stablewm}"
 mkdir -p logs "$STABLEWM_HOME"
+echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL"
 
 python scripts/collect_cartpole_expert_data.py \
     --dataset-name cartpole_expert_worldmodel \
