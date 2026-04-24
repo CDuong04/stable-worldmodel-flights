@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cartpole-expert-data
+#SBATCH --partition=gpu
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
@@ -7,6 +8,11 @@
 #SBATCH --gres=gpu:1
 #SBATCH --output=logs/cartpole-%j.out
 #SBATCH --error=logs/cartpole-%j.err
+
+# CPU-only alternative (no GPU queue wait): replace the two lines above with:
+#   #SBATCH --partition=batch
+# and drop the --gres line, then set MUJOCO_GL=osmesa below. Software rendering
+# is slower (~3–5x) but needs no GPU.
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
