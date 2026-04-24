@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cartpole-expert-data
 #SBATCH --partition=gpu
-#SBATCH --time=02:00:00
+#SBATCH --time=03:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 #SBATCH --output=logs/cartpole-%j.out
 #SBATCH --error=logs/cartpole-%j.err
+
+# To override CPU/env counts at submit time without editing the file:
+#   sbatch --cpus-per-task=8 --export=ALL,NUM_ENVS=8 scripts/submit_cartpole_collect.sh
 
 # CPU-only alternative (no GPU queue wait): replace the two lines above with:
 #   #SBATCH --partition=batch
@@ -26,12 +29,16 @@ if [[ ! -d "$DEFAULT_SCRATCH" ]]; then
 fi
 export STABLEWM_HOME="${STABLEWM_HOME:-$DEFAULT_SCRATCH/stablewm}"
 mkdir -p logs "$STABLEWM_HOME"
-echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL"
+
+NUM_ENVS="${NUM_ENVS:-${SLURM_CPUS_PER_TASK:-4}}"
+EPISODES="${EPISODES:-1800}"
+DATASET_NAME="${DATASET_NAME:-cartpole_expert_worldmodel}"
+echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL  NUM_ENVS=$NUM_ENVS  EPISODES=$EPISODES"
 
 python scripts/collect_cartpole_expert_data.py \
-    --dataset-name cartpole_expert_worldmodel \
-    --episodes 1800 \
-    --num-envs 16 \
+    --dataset-name "$DATASET_NAME" \
+    --episodes "$EPISODES" \
+    --num-envs "$NUM_ENVS" \
     --image-size 224 224 \
     --max-episode-steps 500 \
     --seed 7 \
