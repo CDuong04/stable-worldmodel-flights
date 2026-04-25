@@ -269,17 +269,25 @@ def run(cfg):
 
     action_encoder = Embedder(input_dim=effective_act_dim, emb_dim=embed_dim)
 
+    proj_norm = str(cfg.projector.norm).lower()
+    proj_norm_map = {'bn': nn.BatchNorm1d, 'ln': nn.LayerNorm, 'none': None}
+    if proj_norm not in proj_norm_map:
+        raise ValueError(
+            f"projector.norm must be one of {list(proj_norm_map)}; got {proj_norm!r}"
+        )
+    proj_norm_fn = proj_norm_map[proj_norm]
+
     projector = MLP(
         input_dim=hidden_dim,
         output_dim=embed_dim,
         hidden_dim=2048,
-        norm_fn=nn.BatchNorm1d,
+        norm_fn=proj_norm_fn,
     )
     predictor_proj = MLP(
         input_dim=hidden_dim,
         output_dim=embed_dim,
         hidden_dim=2048,
-        norm_fn=nn.BatchNorm1d,
+        norm_fn=proj_norm_fn,
     )
 
     state_decoder = nn.Sequential(

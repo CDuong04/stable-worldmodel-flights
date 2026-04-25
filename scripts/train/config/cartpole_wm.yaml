@@ -61,6 +61,12 @@ predictor:
   dropout: 0.1
   emb_dropout: 0.0
 
+# Norm in projector / pred_proj. Choices: 'bn', 'ln', 'none'.
+# bn matches the original lewm.yaml; ln removes the train/eval mismatch from
+# BatchNorm running stats and usually shrinks the train-val gap.
+projector:
+  norm: bn
+
 decoder:
   hidden_dim: 256
 
