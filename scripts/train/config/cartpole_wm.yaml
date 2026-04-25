@@ -36,9 +36,8 @@ optimizer:
   weight_decay: 1e-3
 
 wandb:
-  enabled: False
+  enabled: True
   config:
-    entity: lewm
     project: cartpole_lewm
     name: ${output_model_name}
     id: ${subdir}
