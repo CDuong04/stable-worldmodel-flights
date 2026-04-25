@@ -1,0 +1,69 @@
+defaults:
+  - _self_
+  - data: cartpole
+
+output_model_name: cartpole_lewm
+subdir: ${hydra:job.id}
+
+num_workers: 6
+train_split: 0.95
+seed: 3072
+
+# 128x128 collection / 8x8 patches -> 16x16 = 256 patches.
+img_size: 128
+patch_size: 8
+encoder_scale: tiny
+
+trainer:
+  max_epochs: 50
+  devices: auto
+  accelerator: gpu
+  precision: bf16
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 128
+  num_workers: ${num_workers}
+  drop_last: True
+  persistent_workers: True
+  prefetch_factor: 3
+  pin_memory: True
+  shuffle: True
+
+optimizer:
+  type: AdamW
+  lr: 5e-5
+  weight_decay: 1e-3
+
+wandb:
+  enabled: False
+  config:
+    entity: lewm
+    project: cartpole_lewm
+    name: ${output_model_name}
+    id: ${subdir}
+    resume: allow
+    log_model: False
+
+# Single-step dynamics: predict z_{t+1} from (z_t, a_t).
+wm:
+  type: lewm
+  history_size: 1
+  num_preds: 1
+  embed_dim: 192
+  # action_dim and state_dim are auto-set from the dataset at runtime
+  # (see open_dict block in the trainer).
+
+predictor:
+  depth: 4
+  heads: 6
+  mlp_dim: 768
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+decoder:
+  hidden_dim: 256
+
+loss:
+  state_weight: 1.0
