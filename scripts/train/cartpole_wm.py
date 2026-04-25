@@ -25,6 +25,7 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 from stable_pretraining import data as dt
 from torch import nn
+from torchvision.transforms import v2 as tv_v2
 from transformers import ViTConfig, ViTModel
 
 from stable_worldmodel.wm.lewm.lewm import LeWM
@@ -107,11 +108,22 @@ class CartpoleLeWM(LeWM):
 
 
 def get_img_preprocessor(source: str, target: str, img_size: int):
+    """Build a (B, T, C, H, W) image transform pipeline.
+
+    spt 0.1.2's `dt.transforms.Resize` is broken against the installed
+    torchvision (calls `self.transform(...)` which v2.Resize doesn't expose).
+    We bypass it by wrapping `v2.Resize` directly with `WrapTorchTransform`,
+    which routes through `v2.Lambda.__call__` and works correctly.
+    """
     imagenet_stats = dt.dataset_stats.ImageNet
     to_image = dt.transforms.ToImage(
         **imagenet_stats, source=source, target=target
     )
-    resize = dt.transforms.Resize(img_size, source=source, target=target)
+    resize = dt.transforms.WrapTorchTransform(
+        tv_v2.Resize(img_size, antialias=True),
+        source=source,
+        target=target,
+    )
     return dt.transforms.Compose(to_image, resize)
 
 
