@@ -20,6 +20,15 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
+# Re-activate the conda env the user had active at submit time.
+# (SLURM batch jobs inherit PATH but don't run the interactive rc files.)
+if command -v conda >/dev/null 2>&1; then
+  # shellcheck disable=SC1091
+  source "$(conda info --base)/etc/profile.d/conda.sh"
+  conda activate "${CONDA_DEFAULT_ENV:-base}"
+  echo "Active conda env: $(conda info --envs | awk '/\*/ {print $1}')"
+fi
+
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 # Prefer user-set STABLEWM_HOME, then $SCRATCH (SLURM/HPC), then Oscar's
 # /oscar/scratch/$USER, then $HOME/stablewm as a last resort.
@@ -33,13 +42,19 @@ mkdir -p logs "$STABLEWM_HOME"
 NUM_ENVS="${NUM_ENVS:-${SLURM_CPUS_PER_TASK:-4}}"
 EPISODES="${EPISODES:-1800}"
 DATASET_NAME="${DATASET_NAME:-cartpole_expert_worldmodel}"
-echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL  NUM_ENVS=$NUM_ENVS  EPISODES=$EPISODES"
+IMAGE_H="${IMAGE_H:-128}"
+IMAGE_W="${IMAGE_W:-128}"
+EXTRA_FLAGS=()
+if [[ "${OVERWRITE:-0}" == "1" ]]; then
+  EXTRA_FLAGS+=("--overwrite")
+fi
+echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL  NUM_ENVS=$NUM_ENVS  EPISODES=$EPISODES  IMAGE=${IMAGE_H}x${IMAGE_W}  OVERWRITE=${OVERWRITE:-0}"
 
 python scripts/collect_cartpole_expert_data.py \
     --dataset-name "$DATASET_NAME" \
     --episodes "$EPISODES" \
     --num-envs "$NUM_ENVS" \
-    --image-size 224 224 \
+    --image-size "$IMAGE_H" "$IMAGE_W" \
     --max-episode-steps 500 \
     --seed 7 \
     --noise-std 0.02 \
@@ -49,4 +64,5 @@ python scripts/collect_cartpole_expert_data.py \
     --vary-visuals \
     --vary-dynamics \
     --video-episodes 12 \
-    --chunk-size 64
+    --chunk-size 64 \
+    "${EXTRA_FLAGS[@]}"
