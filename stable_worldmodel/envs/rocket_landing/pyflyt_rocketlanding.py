@@ -408,6 +408,7 @@ class RocketLandingEnv(RocketBaseEnv):
 
         state = self.state.copy()
         info = dict(self.info)
+        info["proprio"] = self._build_proprio17()
         return state, info
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -421,7 +422,44 @@ class RocketLandingEnv(RocketBaseEnv):
         """
         state, reward, terminated, truncated, info = super().step(action)
         info["goal"] = self.current_goal
+        info["proprio"] = self._build_proprio17()
         return state, reward, terminated, truncated, dict(info)
+
+    def _build_proprio17(self) -> np.ndarray:
+        """17-D proprio matching parse_obs layout:
+        [pos(3), vel(3), quat_wxyz(4), ang_vel(3), fuel(1), target_rel(3)].
+        Reconstructs from env attributes because env.state is 30-D with a
+        different layout than what the WM/physics expects."""
+        _, ang_pos, _, _, quat_xyzw = super().compute_attitude()
+        quat_wxyz = np.array(
+            [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]],
+            dtype=np.float64,
+        )
+        try:
+            fuel = float(self.env.drones[0].boosters.ratio_fuel_remaining[0])
+        except (AttributeError, IndexError):
+            fuel = 0.0
+        pad_pos = getattr(self, "landing_pad_position", None)
+        if pad_pos is None:
+            try:
+                pos_xyz, _ = p.getBasePositionAndOrientation(
+                    self.landing_pad_id, physicsClientId=self.env._client
+                )
+                pad_pos = np.asarray(pos_xyz, dtype=np.float64)
+            except (AttributeError, Exception):
+                pad_pos = np.zeros(3, dtype=np.float64)
+        target_rel = (
+            np.asarray(pad_pos[:3], dtype=np.float64)
+            - np.asarray(self.lin_pos, dtype=np.float64)
+        )
+        return np.concatenate([
+            np.asarray(self.lin_pos, dtype=np.float64),
+            np.asarray(self.lin_vel, dtype=np.float64),
+            quat_wxyz,
+            np.asarray(self.ang_vel, dtype=np.float64),
+            np.array([fuel], dtype=np.float64),
+            target_rel,
+        ])
 
     def render(self, mode: str = "rgb_array"):
         return super().render()[..., :3]  # discard alpha channel if present

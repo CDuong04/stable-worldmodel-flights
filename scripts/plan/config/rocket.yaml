@@ -1,0 +1,40 @@
+defaults:
+  - launcher: local
+  - solver: cem
+  - _self_
+
+cache_dir: /oscar/data/jpober/cduong5/swm_cache
+image_shape: [480, 480]
+
+world:
+  env_name: swm/PFRocketLanding-v0
+  num_envs: ${eval.num_eval}
+  max_episode_steps: ???
+  history_size: 3
+  frame_skip: 1
+  render_mode: rgb_array
+
+dataset:
+  stats: ${eval.dataset_name}
+  keys_to_cache:
+    - action
+    - proprio
+
+seed: 42
+policy: /oscar/data/jpober/cduong5/models/lewm-rocket/weights_epoch_100.pt
+
+plan_config:
+  horizon: 8
+  receding_horizon: 1
+  action_block: 1
+
+eval:
+  num_eval: 4
+  goal_offset_steps: 60
+  eval_budget: 120
+  img_size: 224
+  dataset_name: rocket_expert
+  callables: []
+
+output:
+  filename: rocket_results.txt

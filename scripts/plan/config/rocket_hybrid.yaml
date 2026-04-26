@@ -1,0 +1,41 @@
+defaults:
+  - launcher: local
+  - solver: cem
+  - _self_
+
+cache_dir: /oscar/data/jpober/cduong5/swm_cache
+image_shape: [480, 480]
+
+world:
+  env_name: swm/PFRocketLanding-v0
+  num_envs: ${eval.num_eval}
+  max_episode_steps: ???
+  history_size: 3
+  frame_skip: 1
+  render_mode: rgb_array
+
+dataset:
+  stats: ${eval.dataset_name}
+  keys_to_cache:
+    - action  # drop proprio so physics gets raw 17-D state
+
+seed: 42
+policy: /oscar/data/jpober/cduong5/models/lewm-rocket/weights_epoch_100.pt
+cost_wrapper: physics_constrained
+hybrid_lambda: 1.0
+
+plan_config:
+  horizon: 40
+  receding_horizon: 1
+  action_block: 1
+
+eval:
+  num_eval: 4
+  goal_offset_steps: 60
+  eval_budget: 120
+  img_size: 224
+  dataset_name: rocket_expert
+  callables: []
+
+output:
+  filename: rocket_hybrid_results.txt

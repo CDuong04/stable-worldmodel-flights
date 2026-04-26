@@ -130,6 +130,8 @@ class RocketConstraintCost(nn.Module):
         w_term_vel: float = 15.0,
         w_term_pos: float = 10.0,
         w_term_tilt: float = 10.0,
+        w_term_alt: float = 100.0,
+        w_alt_dense: float = 0.5,
         glide_slope_ratio: float = 2.0,
         tilt_limit_high: float = 0.44,
         tilt_limit_low: float = 0.17,
@@ -145,6 +147,8 @@ class RocketConstraintCost(nn.Module):
         self.w_term_vel = w_term_vel
         self.w_term_pos = w_term_pos
         self.w_term_tilt = w_term_tilt
+        self.w_term_alt = w_term_alt
+        self.w_alt_dense = w_alt_dense
         self.glide_slope_ratio = glide_slope_ratio
         self.tilt_limit_high = tilt_limit_high
         self.tilt_limit_low = tilt_limit_low
@@ -166,6 +170,7 @@ class RocketConstraintCost(nn.Module):
             h_t = pos[:, t, 2]
             cost += self.w_ground * F.relu(-h_t) ** 2
             cost += self.w_fuel * F.relu(-fuel[:, t, 0]) ** 2
+            cost += self.w_alt_dense * F.relu(h_t) ** 2  # dense altitude: prefer lower h throughout
 
             lat_dist = torch.norm(pos[:, t, :2], dim=-1)
             cost += self.w_glide * F.relu(lat_dist - self.glide_slope_ratio * h_t - 5.0) ** 2
@@ -184,6 +189,7 @@ class RocketConstraintCost(nn.Module):
         cost += self.w_term_vel * torch.sum(vel_T ** 2, dim=-1)
         cost += self.w_term_pos * torch.sum(pos_T[:, :2] ** 2, dim=-1)
         cost += self.w_term_tilt * tilt_from_quat_batch(quat_T) ** 2
+        cost += self.w_term_alt * pos_T[:, 2] ** 2
 
         return cost
 
@@ -221,22 +227,37 @@ class PhysicsConstrainedCost:
         self.constraints = self.constraints.to(device)
 
     def get_cost(self, info_dict: dict, action_candidates: torch.Tensor) -> torch.Tensor:
-        """Compute (B,) combined cost for action candidates."""
+        """Compute (B, N) combined cost for action candidates.
+
+        WM handles 4-D (B, N, H, D) candidates natively; physics term flattens
+        to (B*N, H, D), rolls out, and reshapes cost back to (B, N).
+        """
         if self.project:
             action_candidates = project_rocket_actions(action_candidates)
 
-        goal_cost = self.wm.get_cost(info_dict, action_candidates)
+        goal_cost = self.wm.get_cost(info_dict, action_candidates)  # (B, N)
 
         if self.lam > 0 and "proprio" in info_dict:
+            actions = action_candidates.to(self.device).float()
+            B, N, H, D = actions.shape
+
             proprio = info_dict["proprio"]
             if torch.is_tensor(proprio):
-                state_0 = proprio.squeeze(1).to(self.device).float()
+                state_0 = proprio.to(self.device).float()
             else:
-                state_0 = torch.from_numpy(proprio).squeeze(1).to(self.device).float()
+                state_0 = torch.from_numpy(proprio).to(self.device).float()
 
-            actions_phys = action_candidates.to(self.device).float()
-            trajectory = self.physics.rollout(state_0, actions_phys)
-            phys_cost = self.constraints(trajectory)
+            if state_0.ndim == 4:
+                state_0 = state_0[:, :, -1]
+            elif state_0.ndim == 3:
+                state_0 = state_0[:, -1].unsqueeze(1).expand(B, N, -1)
+            elif state_0.ndim == 2:
+                state_0 = state_0.unsqueeze(1).expand(B, N, -1)
+            state_rep = state_0.reshape(B * N, -1)
+            actions_flat = actions.reshape(B * N, H, D)
+
+            trajectory = self.physics.rollout(state_rep, actions_flat)
+            phys_cost = self.constraints(trajectory).view(B, N)
             goal_cost = goal_cost + self.lam * phys_cost.to(goal_cost.device)
 
         return goal_cost
