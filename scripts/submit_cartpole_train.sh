@@ -34,13 +34,14 @@ mkdir -p logs
 
 # Optional Hydra overrides via env vars.
 HYDRA_OVERRIDES=()
-[[ -n "${EPOCHS:-}"    ]] && HYDRA_OVERRIDES+=("trainer.max_epochs=${EPOCHS}")
-[[ -n "${BATCH:-}"     ]] && HYDRA_OVERRIDES+=("loader.batch_size=${BATCH}")
-[[ -n "${LR:-}"        ]] && HYDRA_OVERRIDES+=("optimizer.lr=${LR}")
-[[ -n "${LAMBDA:-}"    ]] && HYDRA_OVERRIDES+=("loss.state_weight=${LAMBDA}")
-[[ -n "${PROJ_NORM:-}" ]] && HYDRA_OVERRIDES+=("projector.norm=${PROJ_NORM}")
-[[ -n "${WANDB:-}"     ]] && HYDRA_OVERRIDES+=("wandb.enabled=${WANDB}")
-[[ -n "${RUN_NAME:-}"  ]] && HYDRA_OVERRIDES+=("output_model_name=${RUN_NAME}")
+[[ -n "${EPOCHS:-}"      ]] && HYDRA_OVERRIDES+=("trainer.max_epochs=${EPOCHS}")
+[[ -n "${BATCH:-}"       ]] && HYDRA_OVERRIDES+=("loader.batch_size=${BATCH}")
+[[ -n "${LR:-}"          ]] && HYDRA_OVERRIDES+=("optimizer.lr=${LR}")
+[[ -n "${LAMBDA:-}"      ]] && HYDRA_OVERRIDES+=("loss.state_weight=${LAMBDA}")
+[[ -n "${PROJ_NORM:-}"   ]] && HYDRA_OVERRIDES+=("projector.norm=${PROJ_NORM}")
+[[ -n "${STATE_REPR:-}"  ]] && HYDRA_OVERRIDES+=("wm.state_repr=${STATE_REPR}")
+[[ -n "${WANDB:-}"       ]] && HYDRA_OVERRIDES+=("wandb.enabled=${WANDB}")
+[[ -n "${RUN_NAME:-}"    ]] && HYDRA_OVERRIDES+=("output_model_name=${RUN_NAME}")
 
 echo "STABLEWM_HOME=$STABLEWM_HOME"
 echo "Hydra overrides: ${HYDRA_OVERRIDES[*]:-(none)}"

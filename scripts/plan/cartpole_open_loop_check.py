@@ -91,14 +91,27 @@ def open_loop_rollout(
     img_size: int,
     device: str,
 ) -> np.ndarray:
-    """Return predicted physical state trajectory (H_eff + 1, 4)."""
+    """Return predicted physical state trajectory (H_eff + 1, state_dim).
+
+    state_dim depends on the trained decoder: 4 (raw) or 5 (cossin).
+    """
     prep = make_image_preprocessor(img_size)
     img = prep(pixels0).to(device)                 # (1, 3, h, w)
     z0 = encode_images(model, img)                 # (1, D)
     a = torch.from_numpy(action_seq).float().unsqueeze(0).to(device)  # (1, H, A)
     z_traj = rollout_latent(model, z0, a, stats)   # (1, H+1, D)
-    s_pred = decode_states(model, z_traj, stats)   # (1, H+1, 4)
+    s_pred = decode_states(model, z_traj, stats)   # (1, H+1, state_dim)
     return s_pred[0].cpu().numpy()
+
+
+def cossin_to_raw(s_cs: np.ndarray) -> np.ndarray:
+    """Convert (T, 5) cos/sin state to (T, 4) raw [x, theta, x_dot, theta_dot]
+    via theta = atan2(sin, cos)."""
+    x, x_dot = s_cs[..., 0], s_cs[..., 1]
+    cos_t, sin_t = s_cs[..., 2], s_cs[..., 3]
+    theta = np.arctan2(sin_t, cos_t)
+    theta_dot = s_cs[..., 4]
+    return np.stack([x, theta, x_dot, theta_dot], axis=-1)
 
 
 def per_dim_abs_error(pred: np.ndarray, true: np.ndarray) -> np.ndarray:
@@ -124,7 +137,11 @@ def main():
 
     datasets_dir = get_cache_dir(args.cache_dir, sub_folder='datasets')
     dataset_path = Path(datasets_dir, f'{args.dataset_name}.h5')
-    stats = compute_norm_stats(dataset_path).to(args.device)
+    state_repr = str(cfg.get('wm', {}).get('state_repr', 'raw')).lower()
+    if state_repr not in ('raw', 'cossin'):
+        state_repr = 'cossin' if cfg['wm']['state_dim'] == 5 else 'raw'
+    print(f'state_repr={state_repr}')
+    stats = compute_norm_stats(dataset_path, state_repr=state_repr).to(args.device)
 
     eps = pick_episodes(dataset_path, args.episodes, args.seed)
     print(f'Selected {len(eps)} episodes from {dataset_path.name}')
@@ -148,11 +165,17 @@ def main():
         pred_state = open_loop_rollout(
             model, stats, pixels0, action_seq,
             img_size=cfg['img_size'], device=args.device,
-        )                                                  # (H+1, 4)
+        )                                                  # (H+1, state_dim)
 
-        err = per_dim_abs_error(pred_state, true_state)    # (H+1, 4)
+        # Compare in physical 4-dim space regardless of decoder representation.
+        if pred_state.shape[-1] == 5:
+            pred_raw = cossin_to_raw(pred_state)
+        else:
+            pred_raw = pred_state
+
+        err = per_dim_abs_error(pred_raw, true_state)      # (H+1, 4)
         all_errors.append(err)
-        all_pred.append(pred_state)
+        all_pred.append(pred_raw)
         all_true.append(true_state)
 
     if not all_errors:

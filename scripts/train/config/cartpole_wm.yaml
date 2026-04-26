@@ -52,6 +52,12 @@ wm:
   embed_dim: 192
   # action_dim and state_dim are auto-set from the dataset at runtime
   # (see open_dict block in the trainer).
+  # state_repr:
+  #   'cossin' -> decoder outputs (x, x_dot, cos theta, sin theta, theta_dot) [5 dims]
+  #              -- avoids the +/-pi wraparound discontinuity (recommended)
+  #   'raw'    -> decoder outputs (x, theta, x_dot, theta_dot) [4 dims]
+  #              -- matches the legacy v2_ln run for backwards compat
+  state_repr: cossin
 
 predictor:
   depth: 4

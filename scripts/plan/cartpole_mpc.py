@@ -73,13 +73,29 @@ def _column_stats(arr: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
     return mean, std
 
 
-def compute_norm_stats(dataset_path: Path, cache_path: Path | None = None) -> NormStats:
+def _state_4_to_5_np(s: np.ndarray) -> np.ndarray:
+    x, theta, x_dot, theta_dot = s[..., 0], s[..., 1], s[..., 2], s[..., 3]
+    return np.stack(
+        [x, x_dot, np.cos(theta), np.sin(theta), theta_dot], axis=-1,
+    )
+
+
+def compute_norm_stats(
+    dataset_path: Path,
+    state_repr: str = 'raw',
+    cache_path: Path | None = None,
+) -> NormStats:
     """Compute (or load cached) z-score stats for `state` and `action`.
 
-    Cached as JSON next to the .h5 so we don't re-stream the whole file.
+    state_repr:
+      - 'raw'    -> stats over (N, 4) raw state
+      - 'cossin' -> stats over (N, 5) cos/sin state matching the training pipeline
+
+    Cached separately per representation so 4-dim and 5-dim runs don't collide.
     """
     if cache_path is None:
-        cache_path = dataset_path.with_suffix('.norm_stats.json')
+        suffix = '.norm_stats.json' if state_repr == 'raw' else '.norm_stats_cossin.json'
+        cache_path = dataset_path.with_suffix(suffix)
 
     if cache_path.exists():
         with open(cache_path) as f:
@@ -91,10 +107,13 @@ def compute_norm_stats(dataset_path: Path, cache_path: Path | None = None) -> No
             action_std=torch.tensor(d['action_std']),
         )
 
-    print(f'Computing normalization stats from {dataset_path} ...')
+    print(f'Computing normalization stats ({state_repr}) from {dataset_path} ...')
     with h5py.File(dataset_path, 'r') as f:
         state = f['state'][:]
         action = f['action'][:]
+
+    if state_repr == 'cossin':
+        state = _state_4_to_5_np(state)
 
     s_mean, s_std = _column_stats(state)
     a_mean, a_std = _column_stats(action)
@@ -104,6 +123,7 @@ def compute_norm_stats(dataset_path: Path, cache_path: Path | None = None) -> No
         'state_std': s_std.tolist(),
         'action_mean': a_mean.tolist(),
         'action_std': a_std.tolist(),
+        'state_repr': state_repr,
     }
     cache_path.write_text(json.dumps(cache, indent=2))
     print(f'Wrote {cache_path}')
@@ -221,19 +241,42 @@ def make_image_preprocessor(img_size: int):
 def compute_lyapunov(states: torch.Tensor) -> torch.Tensor:
     """V(s) = 0.1*x^2 + (1 - cos(theta)) + 0.05*x_dot^2 + 0.1*theta_dot^2.
 
-    states: (..., 4) physical [x, theta, x_dot, theta_dot]
+    Dispatches on the last-dim size:
+      - 4 dims: raw state [x, theta, x_dot, theta_dot]
+      - 5 dims: cos/sin state [x, x_dot, cos theta, sin theta, theta_dot]
     """
-    x = states[..., 0]
-    theta = states[..., 1]
-    x_dot = states[..., 2]
-    theta_dot = states[..., 3]
-    cos_theta = torch.cos(theta)
+    if states.shape[-1] == 4:
+        x = states[..., 0]
+        theta = states[..., 1]
+        x_dot = states[..., 2]
+        theta_dot = states[..., 3]
+        cos_theta = torch.cos(theta)
+    elif states.shape[-1] == 5:
+        x = states[..., 0]
+        x_dot = states[..., 1]
+        cos_theta = states[..., 2]
+        # sin_theta = states[..., 3]  # unused in V
+        theta_dot = states[..., 4]
+    else:
+        raise ValueError(f'unsupported state dim {states.shape[-1]}')
     return 0.1 * x ** 2 + (1.0 - cos_theta) + 0.05 * x_dot ** 2 + 0.1 * theta_dot ** 2
 
 
 def compute_lyapunov_np(states: np.ndarray) -> np.ndarray:
-    x, theta, x_dot, theta_dot = states[..., 0], states[..., 1], states[..., 2], states[..., 3]
-    return 0.1 * x ** 2 + (1.0 - np.cos(theta)) + 0.05 * x_dot ** 2 + 0.1 * theta_dot ** 2
+    if states.shape[-1] == 4:
+        x = states[..., 0]
+        theta = states[..., 1]
+        x_dot = states[..., 2]
+        theta_dot = states[..., 3]
+        cos_theta = np.cos(theta)
+    elif states.shape[-1] == 5:
+        x = states[..., 0]
+        x_dot = states[..., 1]
+        cos_theta = states[..., 2]
+        theta_dot = states[..., 4]
+    else:
+        raise ValueError(f'unsupported state dim {states.shape[-1]}')
+    return 0.1 * x ** 2 + (1.0 - cos_theta) + 0.05 * x_dot ** 2 + 0.1 * theta_dot ** 2
 
 
 # --------------------------------------------------------------------------- #
@@ -595,10 +638,14 @@ def main():
 
     datasets_dir = get_cache_dir(args.cache_dir, sub_folder='datasets')
     dataset_path = Path(datasets_dir, f'{args.dataset_name}.h5')
-    stats = compute_norm_stats(dataset_path)
+    state_repr = str(cfg.get('wm', {}).get('state_repr', 'raw')).lower()
+    if state_repr not in ('raw', 'cossin'):
+        state_repr = 'cossin' if cfg['wm']['state_dim'] == 5 else 'raw'
+    stats = compute_norm_stats(dataset_path, state_repr=state_repr)
     print(
-        f'Stats — state_mean={stats.state_mean.flatten().tolist()}'
-        f' state_std={stats.state_std.flatten().tolist()}'
+        f'state_repr={state_repr}'
+        f'  state_mean={stats.state_mean.flatten().tolist()}'
+        f'  state_std={stats.state_std.flatten().tolist()}'
     )
 
     eval_seeds = [args.eval_seed_base + i for i in range(args.episodes)]

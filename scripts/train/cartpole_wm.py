@@ -142,6 +142,36 @@ def get_column_normalizer(dataset, source: str, target: str):
     )
 
 
+def state_4_to_5(s: torch.Tensor) -> torch.Tensor:
+    """Map raw cart-pole state (..., [x, theta, x_dot, theta_dot]) to the
+    5-dim cos/sin parameterisation (..., [x, x_dot, cos theta, sin theta, theta_dot]).
+
+    Eliminates the ±pi wraparound discontinuity that prevents the decoder
+    from learning theta under plain MSE.
+    """
+    if s.shape[-1] != 4:
+        raise ValueError(f'expected last dim = 4, got {tuple(s.shape)}')
+    x, theta, x_dot, theta_dot = s.unbind(-1)
+    return torch.stack(
+        [x, x_dot, torch.cos(theta), torch.sin(theta), theta_dot], dim=-1,
+    )
+
+
+def get_state_cossin_transform(dataset, source: str = 'state', target: str = 'state'):
+    """Compose: raw 4-dim state -> 5-dim cos/sin -> z-score (5-dim stats)."""
+    raw = torch.from_numpy(np.array(dataset.get_col_data(source))).float()
+    raw = raw[~torch.isnan(raw).any(dim=1)]
+    cs = state_4_to_5(raw)                                      # (N, 5)
+    mean = cs.mean(0, keepdim=True).clone()
+    std = cs.std(0, keepdim=True).clone().clamp_min(1e-6)
+
+    def fn(x):
+        x = torch.as_tensor(x).float()
+        return ((state_4_to_5(x) - mean) / std).float()
+
+    return dt.transforms.WrapTorchTransform(fn, source=source, target=target)
+
+
 # --------------------------------------------------------------------------- #
 #  Lightning callback for periodic checkpointing                              #
 # --------------------------------------------------------------------------- #
@@ -228,12 +258,22 @@ def run(cfg):
         )
     ]
 
+    state_repr = str(cfg.wm.get('state_repr', 'cossin')).lower()
+    if state_repr not in ('raw', 'cossin'):
+        raise ValueError(f"wm.state_repr must be 'raw' or 'cossin'; got {state_repr!r}")
+
     with open_dict(cfg):
         for col in cfg.data.dataset.keys_to_load:
             if col.startswith('pixels'):
                 continue
-            transforms.append(get_column_normalizer(dataset, col, col))
-            setattr(cfg.wm, f'{col}_dim', dataset.get_dim(col))
+            if col == 'state' and state_repr == 'cossin':
+                transforms.append(
+                    get_state_cossin_transform(dataset, source=col, target=col)
+                )
+                cfg.wm.state_dim = 5
+            else:
+                transforms.append(get_column_normalizer(dataset, col, col))
+                setattr(cfg.wm, f'{col}_dim', dataset.get_dim(col))
 
     dataset.transform = spt.data.transforms.Compose(*transforms)
 
