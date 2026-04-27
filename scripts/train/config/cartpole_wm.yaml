@@ -44,10 +44,14 @@ wandb:
     resume: allow
     log_model: False
 
-# Single-step dynamics: predict z_{t+1} from (z_t, a_t).
+# Predict z_{t+1} from a 3-frame history (z_{t-2}, z_{t-1}, z_t, a_*).
+# history_size > 1 is required to make velocity (q_dot, theta_dot)
+# observable from pixels: a single frame can't reveal motion, so the
+# predictor's causal self-attention recovers velocity from finite differences
+# across the history window.
 wm:
   type: lewm
-  history_size: 1
+  history_size: 3
   num_preds: 1
   embed_dim: 192
   # action_dim and state_dim are auto-set from the dataset at runtime
