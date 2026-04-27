@@ -86,21 +86,26 @@ def load_episode(h5_path: Path, offset: int, length: int) -> dict:
 def open_loop_rollout(
     model,
     stats: NormStats,
-    pixels0: np.ndarray,           # (1, H, W, 3) uint8 — first frame only
+    pixels_init: np.ndarray,       # (HS, H, W, 3) uint8 — first HS frames
     action_seq: np.ndarray,        # (H_eff, 1) raw actions to replay
     img_size: int,
+    history_size: int,
     device: str,
 ) -> np.ndarray:
-    """Return predicted physical state trajectory (H_eff + 1, state_dim).
+    """Return predicted physical state trajectory of shape (HS + H_eff, state_dim).
 
-    state_dim depends on the trained decoder: 4 (raw) or 5 (cossin).
+    The leading HS frames correspond to the encoded real history; the rest are
+    autoregressive predictions seeded from that history.
     """
     prep = make_image_preprocessor(img_size)
-    img = prep(pixels0).to(device)                 # (1, 3, h, w)
-    z0 = encode_images(model, img)                 # (1, D)
+    imgs = prep(pixels_init).to(device)             # (HS, 3, h, w)
+    z_hist = encode_images(model, imgs)             # (HS, D)
+    z_init = z_hist.unsqueeze(0)                    # (1, HS, D)
     a = torch.from_numpy(action_seq).float().unsqueeze(0).to(device)  # (1, H, A)
-    z_traj = rollout_latent(model, z0, a, stats)   # (1, H+1, D)
-    s_pred = decode_states(model, z_traj, stats)   # (1, H+1, state_dim)
+    z_traj = rollout_latent(
+        model, z_init, a, stats, history_size=history_size,
+    )                                               # (1, HS + H, D)
+    s_pred = decode_states(model, z_traj, stats)    # (1, HS + H, state_dim)
     return s_pred[0].cpu().numpy()
 
 
@@ -143,37 +148,47 @@ def main():
     print(f'state_repr={state_repr}')
     stats = compute_norm_stats(dataset_path, state_repr=state_repr).to(args.device)
 
+    history_size = int(cfg.get('wm', {}).get('history_size', 1))
     eps = pick_episodes(dataset_path, args.episodes, args.seed)
-    print(f'Selected {len(eps)} episodes from {dataset_path.name}')
+    print(f'Selected {len(eps)} episodes from {dataset_path.name}; '
+          f'history_size={history_size}')
 
-    all_errors = []     # per-episode (H+1, 4)
+    all_errors = []
     all_pred = []
     all_true = []
     horizon = args.horizon
     for ep_idx, (offset, length) in enumerate(eps):
-        if length <= args.start_step + horizon:
+        # Need history_size warmup frames + horizon predictions.
+        needed = args.start_step + history_size + horizon
+        if length <= needed:
             print(f'  ep {ep_idx}: too short ({length}); skipping')
             continue
-        ep = load_episode(dataset_path, offset + args.start_step, horizon + 1)
-        pixels0 = ep['pixels'][0:1]                       # (1, H, W, 3)
-        action_seq = ep['action'][:horizon]               # (H, 1)
-        true_state = ep['state'][:horizon + 1]            # (H+1, 4)
+        ep = load_episode(
+            dataset_path, offset + args.start_step, history_size + horizon,
+        )
+        pixels_init = ep['pixels'][:history_size]                     # (HS, H, W, 3)
+        action_seq = ep['action'][history_size - 1:history_size - 1 + horizon]
+        # action[t] is the action taken at time t; we need actions from the LAST history
+        # position onwards to drive the rollout
+        true_state = ep['state'][history_size - 1:history_size - 1 + horizon + 1]
 
-        # NaN at episode end-of-buffer position is possible — replace.
         action_seq = np.nan_to_num(action_seq, 0.0).astype(np.float32)
 
-        pred_state = open_loop_rollout(
-            model, stats, pixels0, action_seq,
-            img_size=cfg['img_size'], device=args.device,
-        )                                                  # (H+1, state_dim)
+        pred_full = open_loop_rollout(
+            model, stats, pixels_init, action_seq,
+            img_size=cfg['img_size'],
+            history_size=history_size,
+            device=args.device,
+        )                                                              # (HS + horizon, S)
+        # Compare from the last history frame onwards (current state + predictions).
+        pred_state = pred_full[history_size - 1:]                      # (horizon + 1, S)
 
-        # Compare in physical 4-dim space regardless of decoder representation.
         if pred_state.shape[-1] == 5:
             pred_raw = cossin_to_raw(pred_state)
         else:
             pred_raw = pred_state
 
-        err = per_dim_abs_error(pred_raw, true_state)      # (H+1, 4)
+        err = per_dim_abs_error(pred_raw, true_state)
         all_errors.append(err)
         all_pred.append(pred_raw)
         all_true.append(true_state)

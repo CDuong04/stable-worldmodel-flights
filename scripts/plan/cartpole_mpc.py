@@ -295,22 +295,53 @@ def encode_images(model: CartpoleLeWM, imgs: torch.Tensor) -> torch.Tensor:
 @torch.no_grad()
 def rollout_latent(
     model: CartpoleLeWM,
-    z0: torch.Tensor,           # (B, D)
-    action_seq: torch.Tensor,   # (B, H, A)  -- raw env-space actions
+    z_init: torch.Tensor,        # (B, D) or (B, HS, D)
+    action_seq: torch.Tensor,    # (B, H, A) raw env-space actions
     stats: NormStats,
+    history_size: int = 1,
 ) -> torch.Tensor:
-    """Return latent trajectory (B, H+1, D) where index 0 is z0 and 1..H are predicted."""
-    B, H, A = action_seq.shape
-    a_norm = (action_seq - stats.action_mean) / stats.action_std
-    a_emb = model.action_encoder(a_norm)  # (B, H, D)
+    """Sliding-window autoregressive rollout.
 
-    z_curr = z0.unsqueeze(1)              # (B, 1, D), history_size=1
-    out = [z0]
+    z_init may be a single frame (B, D) or HS frames (B, HS, D). The function
+    grows a buffer of latents and at each step feeds the predictor the last
+    `history_size` of them. Past actions (before action_seq[0]) are unknown,
+    so we pad with zero action embeddings — the prediction error from this
+    pad is bounded to the first HS-1 steps.
+
+    Returns the latent trajectory (B, HS + H, D).
+    """
+    if z_init.ndim == 2:
+        z_init = z_init.unsqueeze(1)            # (B, 1, D)
+    B, HS_in, D = z_init.shape
+    if HS_in < history_size:
+        # pad by repeating the first frame so we always feed the predictor
+        # the size it expects
+        pad = z_init[:, :1].expand(B, history_size - HS_in, D)
+        z_init = torch.cat([pad, z_init], dim=1)
+    elif HS_in > history_size:
+        z_init = z_init[:, -history_size:]
+    HS = history_size
+
+    H = action_seq.shape[1]
+    a_norm = (action_seq - stats.action_mean) / stats.action_std
+    a_emb_future = model.action_encoder(a_norm)              # (B, H, D)
+    if HS > 1:
+        pad_a = torch.zeros(
+            B, HS - 1, a_emb_future.shape[-1],
+            device=a_emb_future.device, dtype=a_emb_future.dtype,
+        )
+        a_emb_seq = torch.cat([pad_a, a_emb_future], dim=1)  # (B, HS-1+H, D)
+    else:
+        a_emb_seq = a_emb_future                              # (B, H, D)
+
+    emb = z_init.clone()                                       # (B, HS, D)
     for k in range(H):
-        z_next = model.predict(z_curr, a_emb[:, k:k + 1])  # (B, 1, D)
-        out.append(z_next.squeeze(1))
-        z_curr = z_next                                    # history_size=1
-    return torch.stack(out, dim=1)         # (B, H+1, D)
+        emb_trunc = emb[:, -HS:]                               # (B, HS, D)
+        a_trunc = a_emb_seq[:, k : k + HS]                     # (B, HS, D)
+        pred = model.predict(emb_trunc, a_trunc)               # (B, HS, D)
+        z_next = pred[:, -1:]                                  # (B, 1, D)
+        emb = torch.cat([emb, z_next], dim=1)
+    return emb                                                  # (B, HS + H, D)
 
 
 @torch.no_grad()
@@ -327,26 +358,41 @@ def decode_states(model: CartpoleLeWM, z_seq: torch.Tensor, stats: NormStats) ->
 # --------------------------------------------------------------------------- #
 
 
+def _expand_init(z_init: torch.Tensor, N: int) -> torch.Tensor:
+    """(E, D) or (E, HS, D) -> (E*N, D) or (E*N, HS, D), tiling per env across N candidates."""
+    if z_init.ndim == 2:
+        E, D = z_init.shape
+        return z_init.unsqueeze(1).expand(E, N, D).reshape(E * N, D)
+    E, HS, D = z_init.shape
+    return z_init.unsqueeze(1).expand(E, N, HS, D).reshape(E * N, HS, D)
+
+
 @torch.no_grad()
 def plan_standard(
     model: CartpoleLeWM,
-    z0: torch.Tensor,           # (E, D)
-    candidates: torch.Tensor,   # (E, N, H, A)
+    z_init: torch.Tensor,        # (E, D) or (E, HS, D)
+    candidates: torch.Tensor,    # (E, N, H, A)
     stats: NormStats,
+    history_size: int = 1,
 ) -> tuple[torch.Tensor, dict]:
-    """Pick the action sequence with the lowest V(s_H). Vectorised over E envs."""
+    """Pick the action sequence with the lowest V(s_H). V_traj is sliced to
+    cover only the (current state + planned) frames so the cost ignores the
+    real history seeded into the rollout."""
     E, N, H, A = candidates.shape
-    D = z0.shape[-1]
-    z0_flat = z0.unsqueeze(1).expand(E, N, D).reshape(E * N, D)
+    z_init_flat = _expand_init(z_init, N)
     cand_flat = candidates.reshape(E * N, H, A)
-    z_traj = rollout_latent(model, z0_flat, cand_flat, stats)        # (EN, H+1, D)
-    s_traj = decode_states(model, z_traj, stats)                     # (EN, H+1, 4)
-    V_traj = compute_lyapunov(s_traj).reshape(E, N, H + 1)
-    V_final = V_traj[:, :, -1]                                       # (E, N)
-    best = V_final.argmin(dim=1)                                     # (E,)
-    best_actions = candidates[torch.arange(E), best, 0]              # (E, A)
+    z_traj = rollout_latent(
+        model, z_init_flat, cand_flat, stats, history_size=history_size,
+    )                                                                # (EN, HS+H, D)
+    s_traj = decode_states(model, z_traj, stats)                     # (EN, HS+H, S)
+    V_traj_full = compute_lyapunov(s_traj)                           # (EN, HS+H)
+    V_plan = V_traj_full[:, history_size - 1:]                       # (EN, H+1)
+    V_plan = V_plan.reshape(E, N, H + 1)
+    V_final = V_plan[:, :, -1]
+    best = V_final.argmin(dim=1)
+    best_actions = candidates[torch.arange(E), best, 0]
     return best_actions, {
-        'V_traj': V_traj,
+        'V_traj': V_plan,
         'V_final': V_final,
         'best_idx': best,
     }
@@ -355,27 +401,30 @@ def plan_standard(
 @torch.no_grad()
 def plan_lyapunov(
     model: CartpoleLeWM,
-    z0: torch.Tensor,
+    z_init: torch.Tensor,
     candidates: torch.Tensor,
     stats: NormStats,
     lambda_v: float,
+    history_size: int = 1,
 ) -> tuple[torch.Tensor, dict]:
-    """Same as plan_standard but adds sum_k max(0, V_{k+1} - V_k) penalty."""
+    """plan_standard + sum_k max(0, V_{k+1} - V_k) penalty over planned steps."""
     E, N, H, A = candidates.shape
-    D = z0.shape[-1]
-    z0_flat = z0.unsqueeze(1).expand(E, N, D).reshape(E * N, D)
+    z_init_flat = _expand_init(z_init, N)
     cand_flat = candidates.reshape(E * N, H, A)
-    z_traj = rollout_latent(model, z0_flat, cand_flat, stats)
+    z_traj = rollout_latent(
+        model, z_init_flat, cand_flat, stats, history_size=history_size,
+    )
     s_traj = decode_states(model, z_traj, stats)
-    V_traj = compute_lyapunov(s_traj).reshape(E, N, H + 1)
-    V_final = V_traj[:, :, -1]
-    dV = V_traj[:, :, 1:] - V_traj[:, :, :-1]                        # (E, N, H)
-    penalty = torch.clamp(dV, min=0.0).sum(dim=-1)                   # (E, N)
+    V_traj_full = compute_lyapunov(s_traj)                           # (EN, HS+H)
+    V_plan = V_traj_full[:, history_size - 1:].reshape(E, N, H + 1)
+    V_final = V_plan[:, :, -1]
+    dV = V_plan[:, :, 1:] - V_plan[:, :, :-1]                        # (E, N, H)
+    penalty = torch.clamp(dV, min=0.0).sum(dim=-1)
     cost = V_final + lambda_v * penalty
     best = cost.argmin(dim=1)
     best_actions = candidates[torch.arange(E), best, 0]
     return best_actions, {
-        'V_traj': V_traj,
+        'V_traj': V_plan,
         'V_final': V_final,
         'penalty': penalty,
         'cost': cost,
@@ -402,6 +451,7 @@ class MPCPolicy(BasePolicy):
         action_low: float,
         action_high: float,
         img_size: int,
+        history_size: int = 1,
         lambda_v: float = 1.0,
         device: str = 'cuda',
         seed: int | None = None,
@@ -415,6 +465,7 @@ class MPCPolicy(BasePolicy):
         self.stats = stats.to(device)
         self.N = n_candidates
         self.H = horizon
+        self.HS = history_size
         self.A = action_dim
         self.alow, self.ahigh = action_low, action_high
         self.lambda_v = lambda_v
@@ -424,36 +475,55 @@ class MPCPolicy(BasePolicy):
         if seed is not None:
             self.gen.manual_seed(seed)
         self.preprocess = make_image_preprocessor(img_size)
-        # diagnostics buffers — set per evaluate() call
         self.last_diag: dict | None = None
 
     def set_seed(self, seed):
         self.seed = seed
         self.gen.manual_seed(seed)
 
+    def _encode_frames(self, pixels_np: np.ndarray) -> torch.Tensor:
+        """pixels_np shape:
+            (E, H, W, 3)        -> single frame (history_size=1 case)
+            (E, T, H, W, 3)     -> T-frame history (T == self.HS expected, but tolerated)
+        Returns z_init: (E, HS, D) when history_size>1 else (E, D)
+        """
+        if pixels_np.ndim == 4:
+            imgs = self.preprocess(pixels_np).to(self.device)        # (E, 3, h, w)
+            z = encode_images(self.model, imgs)                       # (E, D)
+            return z.unsqueeze(1) if self.HS > 1 else z
+        if pixels_np.ndim == 5:
+            E, T, H, W, C = pixels_np.shape
+            imgs = self.preprocess(pixels_np.reshape(E * T, H, W, C)).to(self.device)
+            z = encode_images(self.model, imgs)                       # (E*T, D)
+            z = z.reshape(E, T, -1)                                   # (E, T, D)
+            if T < self.HS:
+                pad = z[:, :1].expand(E, self.HS - T, z.shape[-1])
+                z = torch.cat([pad, z], dim=1)
+            elif T > self.HS:
+                z = z[:, -self.HS:]
+            return z if self.HS > 1 else z.squeeze(1)
+        raise ValueError(f'unsupported pixels shape {pixels_np.shape}')
+
     @torch.no_grad()
     def get_action(self, info_dict, **kwargs):
         pixels = info_dict['pixels']
-        if isinstance(pixels, np.ndarray):
-            pixels_np = pixels
-        else:
-            pixels_np = np.asarray(pixels)
-        # collapse history dim if present (B, T, H, W, 3) -> use last frame
-        if pixels_np.ndim == 5:
-            pixels_np = pixels_np[:, -1]
-        # to (E, 3, H, W)
-        imgs = self.preprocess(pixels_np).to(self.device)
-        z0 = encode_images(self.model, imgs)                         # (E, D)
-        E = z0.shape[0]
+        pixels_np = pixels if isinstance(pixels, np.ndarray) else np.asarray(pixels)
+        z_init = self._encode_frames(pixels_np)
+        E = z_init.shape[0]
 
         cand = torch.empty(
             (E, self.N, self.H, self.A), device=self.device,
         ).uniform_(self.alow, self.ahigh, generator=self.gen)
 
         if self.method == 'standard':
-            best_a, diag = plan_standard(self.model, z0, cand, self.stats)
+            best_a, diag = plan_standard(
+                self.model, z_init, cand, self.stats, history_size=self.HS,
+            )
         else:
-            best_a, diag = plan_lyapunov(self.model, z0, cand, self.stats, self.lambda_v)
+            best_a, diag = plan_lyapunov(
+                self.model, z_init, cand, self.stats, self.lambda_v,
+                history_size=self.HS,
+            )
 
         self.last_diag = {k: v.cpu() if torch.is_tensor(v) else v for k, v in diag.items()}
         return best_a.cpu().numpy().astype(np.float32)
@@ -492,11 +562,13 @@ def evaluate_method(
     device: str,
 ) -> list[EpisodeResult]:
     img_size = cfg['img_size']
+    history_size = int(cfg.get('wm', {}).get('history_size', 1))
     world = swm.World(
         'swm/CartpoleDMControl-v0',
         num_envs=num_envs,
         image_shape=(img_size, img_size),
         max_episode_steps=max_steps,
+        history_size=history_size,
         verbose=0,
     )
     policy = MPCPolicy(
@@ -509,6 +581,7 @@ def evaluate_method(
         action_low=-1.0,
         action_high=1.0,
         img_size=img_size,
+        history_size=history_size,
         lambda_v=lambda_v,
         device=device,
         seed=cfg.get('seed', 0) + 1000,
