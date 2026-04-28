@@ -44,11 +44,17 @@ EPISODES="${EPISODES:-1800}"
 DATASET_NAME="${DATASET_NAME:-cartpole_expert_worldmodel}"
 IMAGE_H="${IMAGE_H:-128}"
 IMAGE_W="${IMAGE_W:-128}"
+NOISE_STD="${NOISE_STD:-0.08}"
+BURST_PROB="${BURST_PROB:-0.04}"
+BURST_NOISE_STD="${BURST_NOISE_STD:-0.35}"
+RANDOM_ACTION_PROB="${RANDOM_ACTION_PROB:-0.12}"
+RANDOM_ACTION_SCALE="${RANDOM_ACTION_SCALE:-1.0}"
 EXTRA_FLAGS=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
   EXTRA_FLAGS+=("--overwrite")
 fi
 echo "STABLEWM_HOME=$STABLEWM_HOME  MUJOCO_GL=$MUJOCO_GL  NUM_ENVS=$NUM_ENVS  EPISODES=$EPISODES  IMAGE=${IMAGE_H}x${IMAGE_W}  OVERWRITE=${OVERWRITE:-0}"
+echo "NOISE_STD=$NOISE_STD  BURST_PROB=$BURST_PROB  BURST_NOISE_STD=$BURST_NOISE_STD  RANDOM_ACTION_PROB=$RANDOM_ACTION_PROB"
 
 python scripts/collect_cartpole_expert_data.py \
     --dataset-name "$DATASET_NAME" \
@@ -57,10 +63,12 @@ python scripts/collect_cartpole_expert_data.py \
     --image-size "$IMAGE_H" "$IMAGE_W" \
     --max-episode-steps 500 \
     --seed 7 \
-    --noise-std 0.02 \
-    --burst-prob 0.01 \
-    --burst-noise-std 0.15 \
+    --noise-std "$NOISE_STD" \
+    --burst-prob "$BURST_PROB" \
+    --burst-noise-std "$BURST_NOISE_STD" \
     --burst-steps 2 5 \
+    --random-action-prob "$RANDOM_ACTION_PROB" \
+    --random-action-scale "$RANDOM_ACTION_SCALE" \
     --vary-visuals \
     --vary-dynamics \
     --video-episodes 12 \
