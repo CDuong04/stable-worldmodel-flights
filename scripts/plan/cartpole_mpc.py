@@ -279,6 +279,17 @@ def compute_lyapunov_np(states: np.ndarray) -> np.ndarray:
     return 0.1 * x ** 2 + (1.0 - cos_theta) + 0.05 * x_dot ** 2 + 0.1 * theta_dot ** 2
 
 
+def current_cartpole_state_from_info(info: dict, env_idx: int) -> np.ndarray:
+    """Return current raw [x, theta, x_dot, theta_dot] from possibly stacked info."""
+    qpos = np.asarray(info['qpos'][env_idx])
+    qvel = np.asarray(info['qvel'][env_idx])
+    if qpos.ndim > 1:
+        qpos = qpos[-1]
+    if qvel.ndim > 1:
+        qvel = qvel[-1]
+    return np.concatenate([qpos.reshape(-1), qvel.reshape(-1)]).astype(np.float32)
+
+
 # --------------------------------------------------------------------------- #
 #  Latent rollout (vectorised over N candidates)                              #
 # --------------------------------------------------------------------------- #
@@ -615,18 +626,14 @@ def evaluate_method(
         for i in range(num_envs):
             if finished[i]:
                 continue
-            qpos = np.asarray(world.infos['qpos'][i]).reshape(-1)
-            qvel = np.asarray(world.infos['qvel'][i]).reshape(-1)
-            traj[i].append(np.concatenate([qpos, qvel]).astype(np.float32))
+            traj[i].append(current_cartpole_state_from_info(world.infos, i))
 
         for t in range(max_steps):
             world.step()
             for i in range(num_envs):
                 if finished[i]:
                     continue
-                qpos = np.asarray(world.infos['qpos'][i]).reshape(-1)
-                qvel = np.asarray(world.infos['qvel'][i]).reshape(-1)
-                traj[i].append(np.concatenate([qpos, qvel]).astype(np.float32))
+                traj[i].append(current_cartpole_state_from_info(world.infos, i))
                 steps_taken[i] += 1
                 if world.terminateds[i] or world.truncateds[i]:
                     finished[i] = True
