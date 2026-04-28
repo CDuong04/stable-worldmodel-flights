@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=cartpole-wm-train
 #SBATCH --partition=gpu
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:l40:1
 #SBATCH --output=logs/cartpole-train-%j.out
 #SBATCH --error=logs/cartpole-train-%j.err
 
