@@ -2,12 +2,13 @@
 
 Encoder (HF ViT) + LeWM latent dynamics + MLP state decoder, trained jointly:
 
-    L = ||F(z_t, a_t) - z_{t+1}||^2 + lambda * ||D(z_t) - s_t||^2
+    L = latent prediction + latent rollout + SIGReg
+        + decoder reconstruction + decoder prediction
 
 Built on the LeWM scaffold from stable_worldmodel/wm/lewm. The existing
-scripts/train/lewm.py imports a few names that aren't actually defined in
-the installed package (ARPredictor, JEPA, SIGReg from lewm.module); this
-script avoids them and uses what's actually there: LeWM + Predictor.
+scripts/train/lewm.py imports a few names that aren't actually defined in the
+installed package (ARPredictor, JEPA from lewm.module); this script avoids
+them and uses what's actually there: LeWM + Predictor.
 """
 
 from functools import partial
@@ -28,6 +29,7 @@ from torch import nn
 from torchvision.transforms import v2 as tv_v2
 from transformers import ViTConfig, ViTModel
 
+from stable_worldmodel.sigreg import SIGReg
 from stable_worldmodel.wm.lewm.lewm import LeWM
 from stable_worldmodel.wm.lewm.module import Embedder, MLP, Predictor
 from stable_worldmodel.wm.utils import save_pretrained
@@ -127,8 +129,61 @@ def get_img_preprocessor(source: str, target: str, img_size: int):
     return dt.transforms.Compose(to_image, resize)
 
 
-def get_column_normalizer(dataset, source: str, target: str):
+class EpisodeWindowSubset(torch.utils.data.Dataset):
+    """Window subset whose samples come only from selected episode ids."""
+
+    def __init__(self, dataset, episode_ids):
+        super().__init__()
+        self.dataset = dataset
+        self.episode_ids = set(int(ep) for ep in episode_ids)
+        self.indices = [
+            idx
+            for idx, (ep_idx, _) in enumerate(dataset.clip_indices)
+            if int(ep_idx) in self.episode_ids
+        ]
+        if not self.indices:
+            raise ValueError(
+                'episode split produced an empty subset: '
+                f'{sorted(self.episode_ids)}'
+            )
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        return self.dataset[self.indices[idx]]
+
+
+def split_episode_ids(dataset, train_fraction: float, seed: int):
+    n_episodes = len(dataset.lengths)
+    if n_episodes < 2:
+        raise ValueError(
+            'cartpole world-model training needs at least two episodes for an '
+            'episode-disjoint train/val split'
+        )
+
+    generator = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(n_episodes, generator=generator).tolist()
+    n_train = int(round(train_fraction * n_episodes))
+    n_train = max(1, min(n_episodes - 1, n_train))
+    return perm[:n_train], perm[n_train:]
+
+
+def episode_row_indices(dataset, episode_ids):
+    rows = [
+        np.arange(
+            int(dataset.offsets[ep_idx]),
+            int(dataset.offsets[ep_idx] + dataset.lengths[ep_idx]),
+        )
+        for ep_idx in episode_ids
+    ]
+    return np.concatenate(rows) if rows else np.array([], dtype=np.int64)
+
+
+def get_column_normalizer(dataset, source: str, target: str, row_indices=None):
     col_data = dataset.get_col_data(source)
+    if row_indices is not None:
+        col_data = col_data[row_indices]
     data = torch.from_numpy(np.array(col_data))
     data = data[~torch.isnan(data).any(dim=1)]
     mean = data.mean(0, keepdim=True).clone()
@@ -143,8 +198,7 @@ def get_column_normalizer(dataset, source: str, target: str):
 
 
 def state_4_to_5(s: torch.Tensor) -> torch.Tensor:
-    """Map raw cart-pole state (..., [x, theta, x_dot, theta_dot]) to the
-    5-dim cos/sin parameterisation (..., [x, x_dot, cos theta, sin theta, theta_dot]).
+    """Map raw cart-pole state to a 5-dim cos/sin parameterisation.
 
     Eliminates the ±pi wraparound discontinuity that prevents the decoder
     from learning theta under plain MSE.
@@ -157,9 +211,17 @@ def state_4_to_5(s: torch.Tensor) -> torch.Tensor:
     )
 
 
-def get_state_cossin_transform(dataset, source: str = 'state', target: str = 'state'):
+def get_state_cossin_transform(
+    dataset,
+    source: str = 'state',
+    target: str = 'state',
+    row_indices=None,
+):
     """Compose: raw 4-dim state -> 5-dim cos/sin -> z-score (5-dim stats)."""
-    raw = torch.from_numpy(np.array(dataset.get_col_data(source))).float()
+    col_data = dataset.get_col_data(source)
+    if row_indices is not None:
+        col_data = col_data[row_indices]
+    raw = torch.from_numpy(np.array(col_data)).float()
     raw = raw[~torch.isnan(raw).any(dim=1)]
     cs = state_4_to_5(raw)                                      # (N, 5)
     mean = cs.mean(0, keepdim=True).clone()
@@ -188,10 +250,12 @@ class SaveCkptCallback(Callback):
         super().on_train_epoch_end(trainer, pl_module)
         if not trainer.is_global_zero:
             return
-        if (trainer.current_epoch + 1) % self.epoch_interval == 0:
-            self._save(pl_module.model, trainer.current_epoch + 1)
-        if (trainer.current_epoch + 1) == trainer.max_epochs:
-            self._save(pl_module.model, trainer.current_epoch + 1)
+        epoch = trainer.current_epoch + 1
+        should_save = (
+            epoch % self.epoch_interval == 0 or epoch == trainer.max_epochs
+        )
+        if should_save:
+            self._save(pl_module.model, epoch)
 
     def _save(self, model, epoch):
         save_pretrained(
@@ -203,14 +267,31 @@ class SaveCkptCallback(Callback):
 
 
 # --------------------------------------------------------------------------- #
-#  Forward pass: encode, predict next latent, decode current state            #
+#  Forward pass: encode, predict future latents, decode states                #
 # --------------------------------------------------------------------------- #
+
+
+def autoregressive_latent_rollout(
+    model, init_emb, act_emb, horizon, history_size
+):
+    """Roll out future latents from encoded history and aligned actions."""
+    emb_seq = init_emb
+    preds = []
+    for step in range(horizon):
+        ctx_emb = emb_seq[:, -history_size:]
+        ctx_act = act_emb[:, step : step + history_size]
+        pred = model.predict(ctx_emb, ctx_act)[:, -1:]
+        preds.append(pred)
+        emb_seq = torch.cat([emb_seq, pred], dim=1)
+    return torch.cat(preds, dim=1)
 
 
 def cartpole_forward(self, batch, stage, cfg):
     ctx_len = cfg.wm.history_size
     n_preds = cfg.wm.num_preds
-    lambd = cfg.loss.state_weight
+    rollout_steps = int(
+        cfg.loss.get('rollout_steps', cfg.get('train_horizon', 1))
+    )
 
     batch['action'] = torch.nan_to_num(batch['action'], 0.0)
 
@@ -220,18 +301,48 @@ def cartpole_forward(self, batch, stage, cfg):
 
     ctx_emb = emb[:, :ctx_len]
     ctx_act = act_emb[:, :ctx_len]
-    tgt_emb = emb[:, n_preds:]
+    tgt_emb = emb[:, n_preds : n_preds + ctx_len].detach()
     pred_emb = self.model.predict(ctx_emb, ctx_act)
 
-    dyn_loss = (pred_emb - tgt_emb).pow(2).mean()
+    latent_loss = (pred_emb - tgt_emb).pow(2).mean()
 
-    pred_state = self.model.decode_state(ctx_emb)
-    tgt_state = batch['state'][:, :ctx_len].float()
-    state_loss = (pred_state - tgt_state).pow(2).mean()
+    pred_future_emb = autoregressive_latent_rollout(
+        self.model,
+        init_emb=ctx_emb,
+        act_emb=act_emb,
+        horizon=rollout_steps,
+        history_size=ctx_len,
+    )
+    tgt_future_emb = emb[:, ctx_len : ctx_len + rollout_steps].detach()
+    rollout_loss = (pred_future_emb - tgt_future_emb).pow(2).mean()
 
-    total = dyn_loss + lambd * state_loss
-    output['dyn_loss'] = dyn_loss
-    output['state_loss'] = state_loss
+    encoded_state = self.model.decode_state(emb)
+    tgt_state = batch['state'].float()
+    state_recon_loss = (encoded_state - tgt_state).pow(2).mean()
+
+    pred_state = self.model.decode_state(pred_future_emb)
+    tgt_future_state = batch['state'][
+        :, ctx_len : ctx_len + rollout_steps
+    ].float()
+    pred_state_loss = (pred_state - tgt_future_state).pow(2).mean()
+
+    sigreg_input = torch.cat([emb, pred_future_emb], dim=1)
+    sigreg_loss = self.sigreg(sigreg_input)
+
+    total = (
+        cfg.loss.latent_weight * latent_loss
+        + cfg.loss.rollout_weight * rollout_loss
+        + cfg.loss.sigreg.weight * sigreg_loss
+        + cfg.loss.state_weight * state_recon_loss
+        + cfg.loss.pred_state_weight * pred_state_loss
+    )
+    output['latent_loss'] = latent_loss
+    output['rollout_loss'] = rollout_loss
+    output['sigreg_loss'] = sigreg_loss
+    output['state_recon_loss'] = state_recon_loss
+    output['pred_state_loss'] = pred_state_loss
+    output['dyn_loss'] = latent_loss + rollout_loss
+    output['state_loss'] = state_recon_loss + pred_state_loss
     output['loss'] = total
 
     self.log_dict(
@@ -250,7 +361,17 @@ def cartpole_forward(self, batch, stage, cfg):
 @hydra.main(version_base=None, config_path='./config', config_name='cartpole_wm')
 def run(cfg):
     # ------- dataset -------
+    with open_dict(cfg):
+        if cfg.data.dataset.get('num_steps') is None:
+            cfg.data.dataset.num_steps = int(cfg.wm.history_size) + int(
+                cfg.train_horizon
+            )
+
     dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
+    train_eps, val_eps = split_episode_ids(
+        dataset, cfg.train_split, cfg.seed
+    )
+    train_rows = episode_row_indices(dataset, train_eps)
 
     transforms = [
         get_img_preprocessor(
@@ -260,7 +381,10 @@ def run(cfg):
 
     state_repr = str(cfg.wm.get('state_repr', 'cossin')).lower()
     if state_repr not in ('raw', 'cossin'):
-        raise ValueError(f"wm.state_repr must be 'raw' or 'cossin'; got {state_repr!r}")
+        raise ValueError(
+            "wm.state_repr must be 'raw' or 'cossin'; "
+            f'got {state_repr!r}'
+        )
 
     with open_dict(cfg):
         for col in cfg.data.dataset.keys_to_load:
@@ -268,21 +392,30 @@ def run(cfg):
                 continue
             if col == 'state' and state_repr == 'cossin':
                 transforms.append(
-                    get_state_cossin_transform(dataset, source=col, target=col)
+                    get_state_cossin_transform(
+                        dataset,
+                        source=col,
+                        target=col,
+                        row_indices=train_rows,
+                    )
                 )
                 cfg.wm.state_dim = 5
             else:
-                transforms.append(get_column_normalizer(dataset, col, col))
+                transforms.append(
+                    get_column_normalizer(
+                        dataset,
+                        col,
+                        col,
+                        row_indices=train_rows,
+                    )
+                )
                 setattr(cfg.wm, f'{col}_dim', dataset.get_dim(col))
 
     dataset.transform = spt.data.transforms.Compose(*transforms)
 
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
-    train_set, val_set = spt.data.random_split(
-        dataset,
-        lengths=[cfg.train_split, 1 - cfg.train_split],
-        generator=rnd_gen,
-    )
+    train_set = EpisodeWindowSubset(dataset, train_eps)
+    val_set = EpisodeWindowSubset(dataset, val_eps)
     train = torch.utils.data.DataLoader(
         train_set, **cfg.loader, generator=rnd_gen
     )
@@ -313,7 +446,8 @@ def run(cfg):
     proj_norm_map = {'bn': nn.BatchNorm1d, 'ln': nn.LayerNorm, 'none': None}
     if proj_norm not in proj_norm_map:
         raise ValueError(
-            f"projector.norm must be one of {list(proj_norm_map)}; got {proj_norm!r}"
+            'projector.norm must be one of '
+            f'{list(proj_norm_map)}; got {proj_norm!r}'
         )
     proj_norm_fn = proj_norm_map[proj_norm]
 
@@ -331,7 +465,7 @@ def run(cfg):
     )
 
     state_decoder = nn.Sequential(
-        nn.Linear(hidden_dim, cfg.decoder.hidden_dim),
+        nn.Linear(embed_dim, cfg.decoder.hidden_dim),
         nn.GELU(),
         nn.LayerNorm(cfg.decoder.hidden_dim),
         nn.Linear(cfg.decoder.hidden_dim, cfg.decoder.hidden_dim),
@@ -361,6 +495,7 @@ def run(cfg):
     data_module = spt.data.DataModule(train=train, val=val)
     module = spt.Module(
         model=world_model,
+        sigreg=SIGReg(latent_dim=embed_dim, **cfg.loss.sigreg.kwargs),
         forward=partial(cartpole_forward, cfg=cfg),
         optim=optimizers,
     )
@@ -388,7 +523,7 @@ def run(cfg):
         ],
         num_sanity_val_steps=1,
         logger=logger,
-        enable_checkpointing=True,
+        enable_checkpointing=False,
     )
 
     manager = spt.Manager(

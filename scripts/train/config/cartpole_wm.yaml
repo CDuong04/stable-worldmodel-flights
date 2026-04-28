@@ -8,6 +8,7 @@ subdir: ${hydra:job.id}
 num_workers: 6
 train_split: 0.95
 seed: 3072
+train_horizon: 5
 
 # 128x128 collection / 8x8 patches -> 16x16 = 256 patches.
 img_size: 128
@@ -81,4 +82,13 @@ decoder:
   hidden_dim: 256
 
 loss:
+  latent_weight: 1.0
+  rollout_steps: ${train_horizon}
+  rollout_weight: 1.0
   state_weight: 1.0
+  pred_state_weight: 1.0
+  sigreg:
+    weight: 0.02
+    kwargs:
+      n_projections: 1024
+      n_frequencies: 17

@@ -1,5 +1,7 @@
 dataset:
-  num_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
+  # Filled by scripts/train/cartpole_wm.py as wm.history_size + train_horizon
+  # unless explicitly overridden from the command line.
+  num_steps: null
   frameskip: 1
   name: cartpole_expert_worldmodel
   keys_to_load:

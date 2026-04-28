@@ -98,3 +98,23 @@ def test_cartpole_expert_policy_pushes_opposite_the_downward_lean():
     action = policy.get_action(info)
 
     assert action[0, 0] < 0.0
+
+
+def test_cartpole_expert_policy_can_mix_random_actions():
+    policy = CartpoleExpertPolicy(
+        noise_std=0.0,
+        burst_prob=0.0,
+        random_action_prob=1.0,
+        random_action_scale=0.25,
+        seed=0,
+    )
+
+    info = {
+        'qpos': np.array([[0.0, 0.1], [0.0, 0.1]], dtype=np.float32),
+        'qvel': np.zeros((2, 2), dtype=np.float32),
+    }
+
+    action = policy.get_action(info)
+
+    assert action.shape == (2, 1)
+    assert np.all(np.abs(action) <= 0.25)

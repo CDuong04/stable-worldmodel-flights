@@ -75,7 +75,7 @@ def parse_args():
         '--image-size',
         type=int,
         nargs=2,
-        default=(224, 224),
+        default=(128, 128),
         metavar=('HEIGHT', 'WIDTH'),
         help='Rendered image size stored in the dataset.',
     )
@@ -118,19 +118,19 @@ def parse_args():
     parser.add_argument(
         '--noise-std',
         type=float,
-        default=0.02,
-        help='Small Gaussian action noise added every step.',
+        default=0.08,
+        help='Gaussian action noise added every step for dynamics coverage.',
     )
     parser.add_argument(
         '--burst-prob',
         type=float,
-        default=0.01,
+        default=0.04,
         help='Probability of starting a short perturbation burst in a step.',
     )
     parser.add_argument(
         '--burst-noise-std',
         type=float,
-        default=0.15,
+        default=0.35,
         help='Noise scale used during perturbation bursts.',
     )
     parser.add_argument(
@@ -140,6 +140,18 @@ def parse_args():
         default=(2, 5),
         metavar=('MIN', 'MAX'),
         help='Inclusive range for perturbation burst duration.',
+    )
+    parser.add_argument(
+        '--random-action-prob',
+        type=float,
+        default=0.12,
+        help='Probability of replacing the expert action with a random action.',
+    )
+    parser.add_argument(
+        '--random-action-scale',
+        type=float,
+        default=1.0,
+        help='Half-width of the uniform random action replacement range.',
     )
     parser.add_argument(
         '--vary-visuals',
@@ -187,6 +199,8 @@ def build_policy(args):
         burst_prob=args.burst_prob,
         burst_noise_std=args.burst_noise_std,
         burst_steps_range=tuple(args.burst_steps),
+        random_action_prob=args.random_action_prob,
+        random_action_scale=args.random_action_scale,
         seed=args.seed,
     )
 

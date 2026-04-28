@@ -66,6 +66,8 @@ class CartpoleExpertPolicy(BasePolicy):
         burst_prob: float = 0.0,
         burst_noise_std: float = 0.0,
         burst_steps_range: tuple[int, int] = (2, 6),
+        random_action_prob: float = 0.0,
+        random_action_scale: float = 1.0,
         seed: int | None = None,
         **kwargs,
     ):
@@ -102,6 +104,8 @@ class CartpoleExpertPolicy(BasePolicy):
         self.burst_prob = float(burst_prob)
         self.burst_noise_std = float(burst_noise_std)
         self.burst_steps_range = tuple(int(v) for v in burst_steps_range)
+        self.random_action_prob = float(random_action_prob)
+        self.random_action_scale = float(random_action_scale)
         self.seed = seed
         self.rng = np.random.default_rng(seed)
         self._burst_steps_remaining: np.ndarray | None = None
@@ -248,4 +252,16 @@ class CartpoleExpertPolicy(BasePolicy):
         action = np.clip(
             action_raw / max(self.force_scale, 1e-6), -1.0, 1.0
         ).astype(np.float32)
+
+        if self.random_action_prob > 0.0:
+            replace = self.rng.random(action.shape[0]) < self.random_action_prob
+            if np.any(replace):
+                random_action = self.rng.uniform(
+                    low=-self.random_action_scale,
+                    high=self.random_action_scale,
+                    size=int(replace.sum()),
+                ).astype(np.float32)
+                action = action.copy()
+                action[replace] = np.clip(random_action, -1.0, 1.0)
+
         return action[:, None]

@@ -227,6 +227,7 @@ dataset/
 *.mp4
 lightning_logs/
 lightning_logs/
+.codex_swm_cache/
 old_tests/
 local_scripts/
 
