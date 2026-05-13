@@ -963,8 +963,12 @@ class World:
             video_frames[:, i] = self.infos['pixels'][:, -1]
             self.infos.update(deepcopy(goal_step))
             self.step()
+            # Success = either terminal (crash) or truncation (soft landing for rocket).
+            # During eval loop (eval_budget < max_episode_steps), truncation only fires
+            # via env-specific completion (e.g., env_complete in rocket), not step-cap.
             results['episode_successes'] = np.logical_or(
-                results['episode_successes'], self.terminateds
+                results['episode_successes'],
+                np.logical_or(self.terminateds, self.truncateds),
             )
             # for auto-reset
             self.envs.unwrapped._autoreset_envs = np.zeros((self.num_envs,))

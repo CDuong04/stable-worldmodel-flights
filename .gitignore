@@ -262,3 +262,4 @@ scripts/setup_and_test.sh
 environment*.json
 requirements_frozen*.txt
 local_scripts/
+expert_trajectories.zip
