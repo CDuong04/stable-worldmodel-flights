@@ -31,7 +31,7 @@ def load_decoder(path: str, embed_dim: int, state_dim: int = 17,
                  architecture: str = "mlp_2", device: str = "cpu") -> StateDecoder:
     decoder = StateDecoder(embed_dim=embed_dim, state_dim=state_dim, architecture=architecture)
     sd = torch.load(path, map_location=device)
-    decoder.load_state_dict(sd if not isinstance(sd, dict) or "state_dict" not in sd else sd["state_dict"])
+    decoder.load_state_dict((sd.get("state_dict") or sd.get("decoder") or sd) if isinstance(sd, dict) else sd)
     return decoder.to(device).eval()
 
 

@@ -20,6 +20,8 @@ trainer:
   devices: auto
   accelerator: gpu
   precision: 16-mixed
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
 
 batch_size: 32
 num_workers: 8
@@ -28,7 +30,7 @@ train_split: 0.9
 image_size: 224
 patch_size: 16
 
-n_steps: 3
+n_steps: 13
 frameskip: 2
 
 dinowm:
@@ -51,12 +53,64 @@ predictor_lr: 3e-4
 proprio_encoder_lr: 3e-4
 action_encoder_lr: 3e-4
 
-# LeJEPA addition: SIGReg on predicted DINO-patch embeddings.
-lejepa_wm:
-  lambda_sigreg: 0.02
-  n_projections: 1024
-  n_frequencies: 17
-  freq_min: 0.1
-  freq_max: 5.0
+# LeWorldModel objective: next-embedding prediction + SIGReg. Since this
+# rocket adaptation freezes and detaches DINOv2, the trainer applies SIGReg to
+# the predicted pixel-latent slice, preserving an anti-collapse gradient path
+# through the predictor.
+loss:
+  sigreg:
+    enabled: true
+    weight: 0.02
+    kwargs:
+      n_projections: 1024
+      n_frequencies: 17
+      freq_min: 0.1
+      freq_max: 5.0
+
+# Observation probe: mean-pooled DINO pixel embeddings -> env observation.
+# Trained in parallel with the world model on detached encoded outputs; its
+# gradient cannot reach the predictor (separate optimiser, detached input).
+# obs_dim is env-specific (rocket = 17D physical state).
+# Train-time data augmentation. The world-model training set is expected to
+# cover the state-action manifold, not be clean success imitation. These knobs
+# encourage that without changing the loss or the architecture.
+augment:
+  image_noise_std: 0.0     # e.g. 0.02 for mild Gaussian noise on normalized pixels
+  # (trajectory inclusion and disturbance collection are handled by
+  # scripts/collect_rocket_data.py and scripts/collect_with_images_disturb.sbatch;
+  # save all rollouts of length >= 20 regardless of terminal flag.)
+
+obs_probe:
+  enabled: true
+  architecture: mlp_2   # linear | mlp_2 | mlp_3
+  hidden_dim: 256
+  obs_dim: 17
+  lr: 3e-4
+  rollout_horizons: [1, 2, 5, 10]
+  rollout_loss_weight: 1.0
+  rollout_batch_size: 1
+
+v_head:
+  enabled: true
+  delta_enabled: true
+  architecture: mlp_2   # linear | mlp_2 | mlp_3
+  hidden_dim: 256
+  lr: 3e-4
+  direct_loss_weight: 0.25
+  rollout_loss_weight: 0.75
+  delta_direct_loss_weight: 0.25
+  delta_rollout_loss_weight: 0.75
+
+# Lyapunov monitor used at rollout time (see scripts/rollout_monitor.py).
+# V(x) = ||p - p_goal||^2 + alpha * ||v||^2 + beta * ||omega||^2
+# Indices refer to obs dims in the decoded observation vector.
+lyapunov:
+  target_rel_idx: [14, 15, 16]   # pad-relative position
+  vel_idx:        [3, 4, 5]
+  ang_vel_idx:    [10, 11, 12]
+  alpha: 0.5
+  beta: 0.1
+  descent_thresh: 0.05
+  k_consecutive: 3
 
 dump_object: True

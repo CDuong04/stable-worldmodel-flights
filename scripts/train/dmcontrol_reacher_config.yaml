@@ -1,0 +1,82 @@
+# DINO-WM + parallel observation probe on dm_control reacher_easy.
+# 2-link planar arm reaching a target; obs = [joint angles, joint velocities,
+# to_target vector] (6-D), action = 2-D torques.
+
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+
+wandb:
+  enable: false
+  project: dinowm-probe
+  entity: null
+
+dataset_name: reacher_easy_expert
+output_model_name: reacher_dinowm_probe
+
+trainer:
+  max_epochs: 200
+  strategy: ddp
+  devices: auto
+  accelerator: gpu
+  precision: 16-mixed
+
+batch_size: 64
+num_workers: 8
+train_split: 0.9
+
+image_size: 224
+patch_size: 16
+
+n_steps: 3
+frameskip: 2
+
+encoder_id: facebook/dinov2-small
+
+# dm_control reacher_easy obs: [cos_q1, sin_q1, cos_q2, sin_q2, qdot1, qdot2,
+# to_target_x, to_target_y]  (8-D). Check the wrapper if it differs.
+dinowm:
+  history_size: 3
+  num_preds: 1
+  proprio_dim: 8
+  proprio_embed_dim: 16
+  action_dim: 2
+  action_embed_dim: 16
+
+predictor:
+  depth: 6
+  heads: 8
+  mlp_dim: 1024
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+predictor_lr: 3e-4
+proprio_encoder_lr: 3e-4
+action_encoder_lr: 3e-4
+
+augment:
+  image_noise_std: 0.02
+
+obs_probe:
+  enabled: true
+  architecture: mlp_2
+  hidden_dim: 128
+  obs_dim: 8
+  lr: 3e-4
+
+# V(x) = || to_target ||^2 + w_v * || qdot ||^2
+lyapunov:
+  mode: quadratic_goal
+  target_rel_idx: [6, 7]
+  vel_idx: [4, 5]
+  w_pos: 1.0
+  w_vel: 0.1
+  descent_thresh: 0.02
+  k_consecutive: 3
+
+dump_object: True

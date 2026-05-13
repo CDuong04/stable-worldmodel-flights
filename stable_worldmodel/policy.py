@@ -357,6 +357,8 @@ class WorldModelPolicy(BasePolicy):
         self.transform = transform or {}
         self._action_buffer: deque[torch.Tensor] | None = None
         self._next_init: torch.Tensor | None = None
+        self.last_solver_outputs: dict[str, Any] | None = None
+        self.just_replanned = False
 
     @property
     def flatten_receding_horizon(self) -> int:
@@ -395,10 +397,13 @@ class WorldModelPolicy(BasePolicy):
         assert 'goal' in info_dict, "'goal' must be provided in info_dict"
 
         info_dict = self._prepare_info(info_dict)
+        self.just_replanned = False
 
         # need to replan if action buffer is empty
         if len(self._action_buffer) == 0:
             outputs = self.solver(info_dict, init_action=self._next_init)
+            self.last_solver_outputs = outputs
+            self.just_replanned = True
 
             actions = outputs['actions']  # (num_envs, horizon, action_dim)
             keep_horizon = self.cfg.receding_horizon

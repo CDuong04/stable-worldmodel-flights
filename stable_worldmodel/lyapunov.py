@@ -49,6 +49,7 @@ class LyapunovMonitor:
 
     def reset(self):
         self._Vs: list[float] = []
+        self._V_tp1s: list[float] = []
         self._deltas: list[float] = []
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -76,6 +77,7 @@ class LyapunovMonitor:
         V_tp = self.compute_V(x_tp).item()
         delta = (V_t - V_tp) / (V_t + self.cfg.eps)
         self._Vs.append(V_t)
+        self._V_tp1s.append(V_tp)
         self._deltas.append(delta)
         return {"V_t": V_t, "V_tp1": V_tp, "delta_t": delta}
 
@@ -90,4 +92,12 @@ class LyapunovMonitor:
             "max_V": float(np.max(self._Vs)),
             "final_V": float(self._Vs[-1]),
             "n_steps": int(len(d)),
+        }
+
+    def trace(self) -> dict:
+        """Return per-transition monitor traces for downstream calibration."""
+        return {
+            "V_t_trace": [float(v) for v in self._Vs],
+            "V_tp1_trace": [float(v) for v in self._V_tp1s],
+            "delta_trace": [float(d) for d in self._deltas],
         }

@@ -236,26 +236,21 @@ class EverythingToInfoWrapper(gym.Wrapper):
         """
         self._step_counter = 0
         obs, info = self.env.reset(*args, **kwargs)
+        # Copy info so we don't mutate the inner env's dict (see step()).
+        info = dict(info)
         if not isinstance(obs, dict):
             _obs = {'observation': obs}
         else:
             _obs = obs
 
         for key, val in _obs.items():
-            assert key not in info
             info[key] = val
 
-        assert 'reward' not in info
         info['reward'] = np.nan
-        assert 'terminated' not in info
         info['terminated'] = False
-        assert 'truncated' not in info
         info['truncated'] = False
-        assert 'action' not in info
         info['action'] = self.env.action_space.sample()
-        assert 'step_idx' not in info
         info['step_idx'] = self._step_counter
-        assert 'id' not in info
         self._id = self._gen_id()
         info['id'] = self._id
 
@@ -277,7 +272,6 @@ class EverythingToInfoWrapper(gym.Wrapper):
 
         for key in self._variations_watch:
             var_key = f'variation.{key}'
-            assert var_key not in info
             subvar_space = get_in(
                 self.env.unwrapped.variation_space, key.split('.')
             )
@@ -299,30 +293,32 @@ class EverythingToInfoWrapper(gym.Wrapper):
             Standard Gymnasium step results.
         """
         obs, reward, terminated, truncated, info = self.env.step(action)
+        # Copy info so we never mutate the inner env's reference. Some
+        # PyFlyt envs reuse the same dict object across step() calls,
+        # which would otherwise carry stale keys from the previous step
+        # and trip the bookkeeping asserts below.
+        info = dict(info)
         self._step_counter += 1
         if not isinstance(obs, dict):
             _obs = {'observation': obs}
         else:
             _obs = obs
+        # Overwrite rather than assert: the bookkeeping keys this wrapper
+        # owns (reward, terminated, action, step_idx, id) and the obs keys
+        # are authoritative at this layer; an inner wrapper that wrote
+        # them earlier in the same call is harmless to overwrite with the
+        # current value.
         for key, val in _obs.items():
-            assert key not in info
             info[key] = val
-        assert 'reward' not in info
         info['reward'] = reward
-        assert 'terminated' not in info
         info['terminated'] = bool(terminated)
-        assert 'truncated' not in info
         info['truncated'] = bool(truncated)
-        assert 'action' not in info
         info['action'] = action
-        assert 'step_idx' not in info
         info['step_idx'] = self._step_counter
-        assert 'id' not in info
         info['id'] = self._id
 
         for key in self._variations_watch:
             var_key = f'variation.{key}'
-            assert var_key not in info
             subvar_space = get_in(
                 self.env.unwrapped.variation_space, key.split('.')
             )

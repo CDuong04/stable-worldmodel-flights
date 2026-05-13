@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel
 
 import stable_worldmodel as swm
+import stable_worldmodel.wm.dinowm as _swm_dinowm  # not re-exported at package top level
+from _stepsdataset import StepsDataset as _LocalStepsDataset  # local Arrow/HF shim
 
 
 DINO_PATCH_SIZE = 14  # DINO encoder uses 14x14 patches
@@ -41,9 +43,19 @@ def get_data(cfg):
         data = dataset[col][:]
         mean = data.mean(0).unsqueeze(0)
         std = data.std(0).unsqueeze(0)
-        return lambda x: (x - mean) / std
+        return lambda x: (x - mean.to(device=x.device, dtype=x.dtype)) / std.to(device=x.device, dtype=x.dtype)
 
-    dataset = swm.data.StepsDataset(
+    def norm_action_transform(dataset):
+        """Normalize frameskip-concatenated primitive actions."""
+        data = dataset["action"][:]
+        mean = data.mean(0).repeat(cfg.frameskip).unsqueeze(0)
+        std = data.std(0).clamp_min(1e-6).repeat(cfg.frameskip).unsqueeze(0)
+        return lambda x: (x - mean.to(device=x.device, dtype=x.dtype)) / std.to(device=x.device, dtype=x.dtype)
+
+    # swm.data.StepsDataset was removed upstream in favour of HDF5Dataset.
+    # The rocket datasets in this repo are HuggingFace Arrow datasets, so use
+    # the local compatibility shim shared with the RocketJEPA trainer.
+    dataset = _LocalStepsDataset(
         cfg.dataset_name,
         num_steps=cfg.n_steps,
         frameskip=cfg.frameskip,
@@ -54,7 +66,7 @@ def get_data(cfg):
     # Image size must be multiple of DINO patch size (14)
     img_size = (cfg.image_size // cfg.patch_size) * DINO_PATCH_SIZE
 
-    norm_action_transform = norm_col_transform(dataset.dataset, "action")
+    norm_action_transform = norm_action_transform(dataset.dataset)
     norm_proprio_transform = norm_col_transform(dataset.dataset, "proprio")
 
     # Apply transforms to all steps
@@ -82,7 +94,7 @@ def get_data(cfg):
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         drop_last=True,
-        persistent_workers=True,
+        persistent_workers=cfg.num_workers > 0,
         pin_memory=True,
         shuffle=True,
     )
@@ -158,7 +170,7 @@ def get_world_model(cfg):
     logging.info(f"Patches: {num_patches}, Embedding dim: {embedding_dim}")
 
     # Build causal predictor (transformer that predicts next latent states)
-    predictor = swm.wm.dinowm.CausalPredictor(
+    predictor = _swm_dinowm.CausalPredictor(
         num_patches=num_patches,
         num_frames=cfg.dinowm.history_size,
         dim=embedding_dim,
@@ -167,13 +179,13 @@ def get_world_model(cfg):
 
     # Build action and proprioception encoders
     effective_act_dim = cfg.frameskip * cfg.dinowm.action_dim
-    action_encoder = swm.wm.dinowm.Embedder(in_chans=effective_act_dim, emb_dim=cfg.dinowm.action_embed_dim)
-    proprio_encoder = swm.wm.dinowm.Embedder(in_chans=cfg.dinowm.proprio_dim, emb_dim=cfg.dinowm.proprio_embed_dim)
+    action_encoder = _swm_dinowm.Embedder(in_chans=effective_act_dim, emb_dim=cfg.dinowm.action_embed_dim)
+    proprio_encoder = _swm_dinowm.Embedder(in_chans=cfg.dinowm.proprio_dim, emb_dim=cfg.dinowm.proprio_embed_dim)
 
     logging.info(f"Action dim: {effective_act_dim}, Proprio dim: {cfg.dinowm.proprio_dim}")
 
     # Assemble world model
-    world_model = swm.wm.DINOWM(
+    world_model = _swm_dinowm.DINOWM(
         encoder=spt.backbone.EvalOnly(encoder),  # Freeze encoder
         predictor=predictor,
         action_encoder=action_encoder,

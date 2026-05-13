@@ -36,9 +36,12 @@ class SIGReg(nn.Module):
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """z: (..., latent_dim) -> scalar SIGReg loss."""
         z = z.reshape(-1, z.shape[-1])
-        projections = self.directions @ z.T                 # (P, B)
-        tz = projections.unsqueeze(2) * self.freqs.view(1, 1, -1)
+        directions = self.directions.to(device=z.device, dtype=z.dtype)
+        freqs = self.freqs.to(device=z.device, dtype=z.dtype)
+        target_cos = self.target_cos.to(device=z.device, dtype=z.dtype)
+        projections = directions @ z.T                      # (P, B)
+        tz = projections.unsqueeze(2) * freqs.view(1, 1, -1)
         emp_cos = tz.cos().mean(dim=1)                      # (P, F)
         emp_sin = tz.sin().mean(dim=1)
-        target_cos = self.target_cos.unsqueeze(0)
+        target_cos = target_cos.unsqueeze(0)
         return ((emp_cos - target_cos) ** 2 + emp_sin ** 2).mean()

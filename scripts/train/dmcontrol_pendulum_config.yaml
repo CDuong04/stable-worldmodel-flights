@@ -1,0 +1,81 @@
+# DINO-WM + parallel observation probe on dm_control pendulum_swingup.
+# Simplest non-trivial dynamics: single pole, 1-D torque.
+
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+
+wandb:
+  enable: false
+  project: dinowm-probe
+  entity: null
+
+dataset_name: pendulum_swingup_expert
+output_model_name: pendulum_dinowm_probe
+
+trainer:
+  max_epochs: 200
+  strategy: ddp
+  devices: auto
+  accelerator: gpu
+  precision: 16-mixed
+
+batch_size: 64
+num_workers: 8
+train_split: 0.9
+
+image_size: 224
+patch_size: 16
+
+n_steps: 3
+frameskip: 2
+
+encoder_id: facebook/dinov2-small
+
+# dm_control pendulum_swingup obs = [cos_theta, sin_theta, angular_velocity] (3-D).
+dinowm:
+  history_size: 3
+  num_preds: 1
+  proprio_dim: 3
+  proprio_embed_dim: 8
+  action_dim: 1
+  action_embed_dim: 8
+
+predictor:
+  depth: 4
+  heads: 8
+  mlp_dim: 512
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+predictor_lr: 3e-4
+proprio_encoder_lr: 3e-4
+action_encoder_lr: 3e-4
+
+augment:
+  image_noise_std: 0.02
+
+obs_probe:
+  enabled: true
+  architecture: mlp_2
+  hidden_dim: 64
+  obs_dim: 3
+  lr: 3e-4
+
+# V(x) = w_theta * (1 - cos_theta) + w_w * angular_velocity^2
+# upright <=> cos_theta = 1 <=> V = 0 (when velocity also 0).
+lyapunov:
+  mode: pendulum_swingup
+  cos_theta_idx: 0
+  ang_vel_idx: 2
+  w_theta: 1.0
+  w_ang_vel: 0.1
+  descent_thresh: 0.02
+  k_consecutive: 3
+
+dump_object: True

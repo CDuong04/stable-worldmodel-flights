@@ -214,10 +214,75 @@ class DINOWM(torch.nn.Module):
         assert "action" in info_dict, "action key must be in info_dict"
         assert "pixels" in info_dict, "pixels key must be in info_dict"
 
-        # move to device and unsqueeze time
-        for k, v in info_dict.items():
+        # CEM passes inputs as (B, N, ...) where N=num_samples. The encode
+        # path expects a flat batch. Flatten the leading two dims if the
+        # action_candidates tensor signals an N-dim CEM expansion (its shape
+        # is (B, N, H, D)) so the resize/conv stack stays on a 4-D pixel
+        # tensor. We restore (B, N, ...) on the cost output below. Handle
+        # both torch tensors and numpy arrays (CEM uses np.repeat for arrays).
+        import numpy as _np
+        squashed_BN = None
+        if action_candidates.dim() == 4 and action_candidates.shape[1] > 1:
+            B_cem, N_cem = action_candidates.shape[:2]
+            squashed_BN = (B_cem, N_cem)
+            action_candidates = action_candidates.reshape(
+                B_cem * N_cem, *action_candidates.shape[2:])
+            for k, v in list(info_dict.items()):
+                if torch.is_tensor(v) and v.dim() >= 2 and tuple(v.shape[:2]) == (B_cem, N_cem):
+                    info_dict[k] = v.reshape(B_cem * N_cem, *v.shape[2:])
+                elif isinstance(v, _np.ndarray) and v.ndim >= 2 and v.shape[:2] == (B_cem, N_cem):
+                    info_dict[k] = v.reshape(B_cem * N_cem, *v.shape[2:])
+
+        def _ensure_time_dim(key, value):
+            """Move model inputs to device and add time only when absent."""
+            value = value.to(self.device)
+            if key in {"pixels", "goal"}:
+                # (B, C, H, W) -> (B, 1, C, H, W). Keep
+                # (B, T, C, H, W) histories intact.
+                if value.dim() == 4:
+                    value = value.unsqueeze(1)
+            elif key in {"proprio", "goal_proprio", "action"}:
+                # (B, D) -> (B, 1, D). Keep (B, T, D) histories intact.
+                if value.dim() == 2:
+                    value = value.unsqueeze(1)
+            else:
+                # Legacy scalar/vector metadata is not used by DINOWM, but keep
+                # the previous single-frame behavior for tensors that reach here.
+                if value.dim() >= 1 and value.shape[0] == action_candidates.shape[0]:
+                    value = value.unsqueeze(1)
+            return value
+
+        for k, v in list(info_dict.items()):
             if torch.is_tensor(v):
-                info_dict[k] = v.unsqueeze(1).to(self.device)
+                info_dict[k] = _ensure_time_dim(k, v)
+
+        # Rollout expects actions for observed history slots followed by future
+        # candidate actions. CEM optimizes only the future actions, so prepend the
+        # known packed action blocks between observed history frames when present.
+        n_obs = int(info_dict["pixels"].shape[1])
+        history_actions = info_dict.get("action")
+        if history_actions is not None:
+            if history_actions.dim() == 2:
+                history_actions = history_actions.unsqueeze(1)
+            history_actions = torch.nan_to_num(history_actions, nan=0.0)
+            n_hist = max(n_obs - 1, 0)
+            if n_hist > 0:
+                if history_actions.shape[1] >= n_hist:
+                    action_prefix = history_actions[:, -n_hist:]
+                else:
+                    pad = torch.zeros(
+                        history_actions.shape[0],
+                        n_hist - history_actions.shape[1],
+                        action_candidates.shape[-1],
+                        device=history_actions.device,
+                        dtype=history_actions.dtype,
+                    )
+                    action_prefix = torch.cat([pad, history_actions], dim=1)
+                action_sequence = torch.cat([action_prefix, action_candidates], dim=1)
+            else:
+                action_sequence = action_candidates
+        else:
+            action_sequence = action_candidates
 
         # == get the goal embedding
         proprio_key = "goal_proprio" if "goal_proprio" in info_dict else None
@@ -230,11 +295,11 @@ class DINOWM(torch.nn.Module):
         )
 
         # == run world model
-        info_dict = self.rollout(info_dict, action_candidates)
+        info_dict = self.rollout(info_dict, action_sequence)
 
         # == get the pixels cost
         pixels_preds = info_dict["predicted_pixels_embed"]  # (B, T, P, d)
-        pixels_goal = info_dict["pixels_goal_embed"]
+        pixels_goal = info_dict["pixels_goal_embed"][:, -1:]
         pixels_cost = F.mse_loss(pixels_preds[:, -1:], pixels_goal, reduction="none").mean(
             dim=tuple(range(1, pixels_preds.ndim))
         )
@@ -244,13 +309,18 @@ class DINOWM(torch.nn.Module):
         if proprio_key is not None:
             # == get the proprio cost
             proprio_preds = info_dict["predicted_proprio_embed"]
-            proprio_goal = info_dict["proprio_goal_embed"]
+            proprio_goal = info_dict["proprio_goal_embed"][:, -1:]
 
             proprio_cost = F.mse_loss(proprio_preds[:, -1:], proprio_goal, reduction="none").mean(
                 dim=tuple(range(1, proprio_preds.ndim))
             )
             cost = cost + proprio_cost
 
+        # If we flattened (B, N) -> B*N at entry, restore the (B, N) shape so
+        # the CEM solver's `assert costs.ndim == 2` is satisfied and the
+        # CLF cost wrapper sees the same shape it would have without the fix.
+        if squashed_BN is not None and cost.dim() == 1 and cost.numel() == squashed_BN[0] * squashed_BN[1]:
+            cost = cost.reshape(*squashed_BN)
         return cost
 
 

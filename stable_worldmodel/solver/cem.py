@@ -36,6 +36,8 @@ class CEMSolver:
         topk: int = 30,
         device: str | torch.device = "cpu",
         seed: int = 1234,
+        diagnostics_enabled: bool = False,
+        return_best_candidate: bool = False,
     ) -> None:
         self.model = model
         self.batch_size = batch_size
@@ -45,6 +47,8 @@ class CEMSolver:
         self.topk = topk
         self.device = device
         self.torch_gen = torch.Generator(device=device).manual_seed(seed)
+        self.diagnostics_enabled = diagnostics_enabled
+        self.return_best_candidate = return_best_candidate
 
     def configure(self, *, action_space: gym.Space, n_envs: int, config: Any) -> None:
         """Configure the solver with environment specifications."""
@@ -109,6 +113,7 @@ class CEMSolver:
         var = var.to(self.device)
 
         total_envs = self.n_envs
+        selected = mean.clone()
 
         # --- Iterate over batches ---
         for start_idx in range(0, total_envs, self.batch_size):
@@ -136,6 +141,8 @@ class CEMSolver:
 
             # Optimization Loop
             final_batch_cost = None
+            final_best = batch_mean
+            final_shield_diag = None
 
             for step in range(self.n_steps):
                 # Sample action sequences: (Batch, Num_Samples, Horizon, Dim)
@@ -153,6 +160,9 @@ class CEMSolver:
 
                 # Force the first sample to be the current mean
                 candidates[:, 0] = batch_mean
+
+                if hasattr(self.model, "project_actions"):
+                    candidates = self.model.project_actions(candidates)
 
                 current_info = expanded_infos.copy()
 
@@ -175,6 +185,7 @@ class CEMSolver:
                 # Indexing: candidates[batch_idx, sample_idx]
                 # Result shape: (Batch, K, Horizon, Dim)
                 topk_candidates = candidates[batch_indices, topk_inds]
+                final_best = topk_candidates[:, 0]
 
                 # Update Mean and Variance based on Top-K
                 batch_mean = topk_candidates.mean(dim=1)
@@ -183,17 +194,52 @@ class CEMSolver:
                 # Update final cost for logging
                 # We average the cost of the top elites
                 final_batch_cost = topk_vals.mean(dim=1).cpu().tolist()
+                if step == self.n_steps - 1 and hasattr(self.model, "select_shielded_actions"):
+                    try:
+                        final_best, final_shield_diag = self.model.select_shielded_actions(
+                            current_info, candidates, costs
+                        )
+                    except Exception as exc:  # pragma: no cover - diagnostics only
+                        outputs.setdefault("shield_errors", []).append(
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
             # Write results back to global storage
+            if hasattr(self.model, "project_actions"):
+                batch_mean = self.model.project_actions(batch_mean)
+                if not (
+                    isinstance(final_shield_diag, dict)
+                    and final_shield_diag.get("actions_projected", False)
+                ):
+                    final_best = self.model.project_actions(final_best)
             mean[start_idx:end_idx] = batch_mean
             var[start_idx:end_idx] = batch_var
+            selected[start_idx:end_idx] = final_best
 
             # Store history/metadata
             outputs["costs"].extend(final_batch_cost)
+            if final_shield_diag is not None:
+                outputs.setdefault("shield_diagnostics", []).append(final_shield_diag)
 
-        outputs["actions"] = mean.detach().cpu()
+        actions = selected if self.return_best_candidate else mean
+        if hasattr(self.model, "project_actions"):
+            actions = self.model.project_actions(actions)
+
+        outputs["actions"] = actions.detach().cpu()
         outputs["mean"] = [mean.detach().cpu()]
         outputs["var"] = [var.detach().cpu()]
+        if self.return_best_candidate:
+            outputs["selected"] = selected.detach().cpu()
+
+        if self.diagnostics_enabled and hasattr(self.model, "diagnose_plan"):
+            try:
+                outputs["diagnostics"] = self.model.diagnose_plan(
+                    info_dict.copy(), actions
+                )
+            except Exception as exc:  # pragma: no cover - best-effort logging
+                outputs["diagnostics_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
 
         print(f"CEM solve time: {time.time() - start_time:.4f} seconds")
         return outputs
