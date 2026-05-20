@@ -445,6 +445,7 @@ def run_clf_eval(
     device: str,
     lambda_V: float,
     eta: float,
+    max_steps: int = 1200,
     alpha: float = 0.5,
     beta: float = 0.1,
     clf_normalized_descent: bool = True,
@@ -643,7 +644,7 @@ def run_clf_eval(
             "swm/PFRocketLandingExt-v0",
             num_envs=1, image_shape=(224, 224),
             history_size=history_size, frame_skip=frame_skip,
-            max_episode_steps=1200, render_mode="rgb_array",
+            max_episode_steps=max_steps, render_mode="rgb_array",
         )
         policy = WorldModelPolicy(
             solver=solver,
@@ -678,7 +679,7 @@ def run_clf_eval(
             primitive_action_dim = int(np.prod(world.envs.action_space.shape[1:]))
             oracle_rng = np.random.default_rng(seed + ep + 7919)
             t = 0
-            while not done and t < 1200:
+            while not done and t < max_steps:
                 # Match the training contract: 3-frame, frameskip-2 image and
                 # proprio histories plus packed action blocks for the known
                 # intervals between observed frames.
@@ -1030,6 +1031,8 @@ def main():
                    help="Local perturbation scale as a fraction of action range for oracle candidates.")
     p.add_argument("--oracle-eta", type=float, default=0.0,
                    help="Minimum true one-step Lyapunov descent required by the oracle shield.")
+    p.add_argument("--max-steps", type=int, default=1200,
+                   help="Max simulator steps per episode (caps non-terminating runs).")
     p.add_argument("--out", default=None,
                    help="Output JSON. Default: results_lejepa_v4/clf_eval/<model>__lambda<x>.json")
     args = p.parse_args()
@@ -1068,6 +1071,7 @@ def main():
         oracle_candidates=args.oracle_candidates,
         oracle_sigma=args.oracle_sigma,
         oracle_eta=args.oracle_eta,
+        max_steps=args.max_steps,
     )
     with open(out, "w") as f:
         json.dump(results, f, indent=2)

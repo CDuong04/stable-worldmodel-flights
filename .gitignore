@@ -248,6 +248,7 @@ slurm-*.out
 *.fdb_latexmk
 *.synctex.gz
 references.bib
+*.bib
 
 # SLURM batch scripts
 *.sbatch

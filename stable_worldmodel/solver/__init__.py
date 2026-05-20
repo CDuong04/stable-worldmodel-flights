@@ -1,4 +1,5 @@
 from .cem import CEMSolver
+from .cem_lagrangian import CEMLagrangianSolver
 from .gd import GradientSolver
 from .icem import ICEMSolver
 from .lagrangian import LagrangianSolver
@@ -20,6 +21,7 @@ __all__ = [
     'PGDSolver',
     'MPPISolver',
     'LagrangianSolver',
+    'CEMLagrangianSolver',
     'ActionSpaceCostAdapter',
     'DatasetColumnNormalizer',
     'RocketActionAdapter',

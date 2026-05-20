@@ -19,7 +19,7 @@ output_model_name: pendulum_dinowm_probe
 
 trainer:
   max_epochs: 200
-  strategy: ddp
+  strategy: auto
   devices: auto
   accelerator: gpu
   precision: 16-mixed
@@ -72,7 +72,7 @@ obs_probe:
 lyapunov:
   mode: pendulum_swingup
   cos_theta_idx: 0
-  ang_vel_idx: 2
+  ang_vel_idx: [2]
   w_theta: 1.0
   w_ang_vel: 0.1
   descent_thresh: 0.02

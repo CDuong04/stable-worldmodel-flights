@@ -28,7 +28,7 @@ output_model_name: cartpole_dinowm_probe
 
 trainer:
   max_epochs: 200
-  strategy: ddp
+  strategy: auto
   devices: auto
   accelerator: gpu
   precision: 16-mixed
@@ -83,10 +83,10 @@ obs_probe:
 # Indices refer to the 5-D observation [x, v, cos_t, sin_t, w_t].
 lyapunov:
   mode: cartpole_swingup       # bespoke form; see scripts/rollout_monitor.py
-  pos_idx: 0
-  vel_idx: 1
+  pos_idx: [0]
+  vel_idx: [1]
   cos_theta_idx: 2
-  ang_vel_idx: 4
+  ang_vel_idx: [4]
   w_pos: 0.1
   w_theta: 1.0
   w_vel: 0.05
